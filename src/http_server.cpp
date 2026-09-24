@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <sstream>
@@ -24,7 +25,9 @@
 #endif
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -75,21 +78,72 @@ async function update(){try{const r=await fetch('/api/stats',{cache:'no-store'})
 update();setInterval(update,2000);addEventListener('resize',update);
 </script></body></html>)HTML";
 
-bool send_all(Socket socket, std::string_view bytes) {
+using Clock = std::chrono::steady_clock;
+constexpr auto kIdleTimeout = std::chrono::seconds{2};
+
+bool nonblocking(Socket socket) {
+#ifdef _WIN32
+  u_long enabled = 1;
+  return ::ioctlsocket(socket, FIONBIO, &enabled) == 0;
+#else
+  const int flags = ::fcntl(socket, F_GETFL, 0);
+  return flags != -1 && ::fcntl(socket, F_SETFL, flags | O_NONBLOCK) != -1;
+#endif
+}
+
+bool retry_socket_error() {
+  const auto code = socket_error();
+#ifdef _WIN32
+  return code == WSAEWOULDBLOCK || code == WSAEINTR;
+#else
+  return code == EWOULDBLOCK || code == EAGAIN || code == EINTR;
+#endif
+}
+
+// Poll in short slices: shutdown() need not interrupt a blocking Winsock recv.
+// Nonblocking I/O also handles readiness becoming stale without losing the
+// cancellation bound. poll avoids select's descriptor-number/FD_SETSIZE limit.
+bool wait_ready(Socket socket, bool writing, Clock::time_point deadline,
+                const std::atomic<bool>& running) {
+  while (running.load()) {
+    const auto remaining = deadline - Clock::now();
+    if (remaining <= Clock::duration::zero()) return false;
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count();
+    const int timeout = static_cast<int>(std::clamp<decltype(millis)>(millis, 1, 50));
+#ifdef _WIN32
+    WSAPOLLFD descriptor{socket, static_cast<SHORT>(writing ? POLLWRNORM : POLLRDNORM), 0};
+    const int ready = ::WSAPoll(&descriptor, 1, timeout);
+#else
+    pollfd descriptor{socket, static_cast<short>(writing ? POLLOUT : POLLIN), 0};
+    const int ready = ::poll(&descriptor, 1, timeout);
+#endif
+    if (!running.load()) return false;
+    if (ready > 0) return true; // recv/send resolves EOF and socket errors.
+    if (ready < 0 && !retry_socket_error()) return false;
+  }
+  return false;
+}
+
+bool send_all(Socket socket, std::string_view bytes, const std::atomic<bool>& running) {
+  auto deadline = Clock::now() + kIdleTimeout;
   while (!bytes.empty()) {
+    if (!wait_ready(socket, true, deadline, running)) return false;
 #ifdef _WIN32
     const int sent = ::send(socket, bytes.data(), static_cast<int>(bytes.size()), 0);
 #else
     const auto sent = ::send(socket, bytes.data(), bytes.size(), MSG_NOSIGNAL);
 #endif
+    if (sent < 0 && retry_socket_error()) continue;
     if (sent <= 0) return false;
     bytes.remove_prefix(static_cast<std::size_t>(sent));
+    deadline = Clock::now() + kIdleTimeout;
   }
   return true;
 }
 
-void send_response(Socket socket, int status, std::string_view status_text,
-                   std::string_view content_type, std::string_view body) {
+void write_response(Socket socket, int status, std::string_view status_text,
+                    std::string_view content_type, std::string_view body,
+                    const std::atomic<bool>& running) {
   std::ostringstream head;
   head << "HTTP/1.1 " << status << ' ' << status_text << "\r\n"
        << "Content-Type: " << content_type << "\r\n"
@@ -103,7 +157,7 @@ void send_response(Socket socket, int status, std::string_view status_text,
   if (status == 405) head << "Allow: GET\r\n";
   head << "\r\n";
   const auto header = head.str();
-  if (send_all(socket, header)) send_all(socket, body);
+  if (send_all(socket, header, running)) send_all(socket, body, running);
 }
 
 }  // namespace
@@ -203,19 +257,7 @@ struct HttpServer::Impl {
         }
         active_client = client;
       }
-      // Bound idle reads and writes as well as explicitly interrupting them
-      // during stop(). A stalled peer must not monopolize the accept thread.
-#ifdef _WIN32
-      const DWORD timeout_ms = 2000;
-      const auto* timeout = reinterpret_cast<const char*>(&timeout_ms);
-      ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, timeout, sizeof(timeout_ms));
-      ::setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, timeout, sizeof(timeout_ms));
-#else
-      const timeval timeout{2, 0};
-      ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-      ::setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-#endif
-      handle(client);
+      if (nonblocking(client)) handle(client);
       {
         std::lock_guard client_lock(client_mutex);
         active_client = kInvalidSocket;
@@ -224,22 +266,32 @@ struct HttpServer::Impl {
     }
   }
 
+  void send_response(Socket client, int status, std::string_view status_text,
+                     std::string_view content_type, std::string_view body) {
+    write_response(client, status, status_text, content_type, body, is_running);
+  }
+
   void handle(Socket client) noexcept {
     try {
       std::string request;
       request.reserve(1024);
       char buffer[1024];
+      auto deadline = Clock::now() + kIdleTimeout;
       while (request.find("\r\n\r\n") == std::string::npos &&
              request.size() < options.max_request_bytes) {
+        if (!wait_ready(client, false, deadline, is_running)) break;
         const auto remaining = std::min(sizeof(buffer), options.max_request_bytes - request.size());
 #ifdef _WIN32
         const int read = ::recv(client, buffer, static_cast<int>(remaining), 0);
 #else
         const auto read = ::recv(client, buffer, remaining, 0);
 #endif
+        if (read < 0 && retry_socket_error()) continue;
         if (read <= 0) break;
         request.append(buffer, static_cast<std::size_t>(read));
+        deadline = Clock::now() + kIdleTimeout;
       }
+      if (!is_running.load()) return;
       if (request.find("\r\n\r\n") == std::string::npos) {
         if (request.size() == options.max_request_bytes)
           send_response(client, 431, "Request Header Fields Too Large", "text/plain; charset=utf-8", "headers too large\n");

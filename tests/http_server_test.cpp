@@ -106,7 +106,7 @@ JEVT_TEST("shutdown interrupts a client waiting to finish its headers") {
     JEVT_REQUIRE_EQ(::connect(client.socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
     constexpr char partial[] = "GET /healthz HTTP/1.1\r\nHost: localhost\r\n";
     JEVT_REQUIRE(::send(client.socket, partial, sizeof(partial) - 1, 0) > 0);
-    // Give the accept worker time to enter recv() for the unfinished headers.
+    // Give the accept worker time to wait for the unfinished headers.
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
     auto stopped = std::async(std::launch::async, [&] { server.stop(); });
     const auto status = stopped.wait_for(std::chrono::milliseconds{500});

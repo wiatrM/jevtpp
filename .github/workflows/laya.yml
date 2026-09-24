@@ -23,7 +23,7 @@ jobs:
           curl --fail --location --retry 3 -o "$RUNNER_TEMP/ort.tgz" https://github.com/microsoft/onnxruntime/releases/download/v1.29.1/onnxruntime-linux-x64-1.29.1.tgz
           printf 'a28d7d65acafc06fb0f416cb409998773f5314c7eebf77caf907812831cdfc67  %s\n' "$RUNNER_TEMP/ort.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP"
-      - uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: models/laya-multilingual
           key: laya-${{ hashFiles('scripts/fetch_laya.py') }}
