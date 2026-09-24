@@ -1,4 +1,8 @@
 find_package(Threads REQUIRED)
+if(JEVT_ENABLE_LAYA AND JEVT_ENABLE_LAYA_NATIVE)
+  add_executable(jevt_backend_compare backend_compare.cpp)
+  target_link_libraries(jevt_backend_compare PRIVATE jevt::laya jevt::laya_native Threads::Threads)
+endif()
 add_executable(jevt_diagnostics_contention diagnostics_contention.cpp)
 target_link_libraries(jevt_diagnostics_contention PRIVATE jevt::jevt Threads::Threads)
 

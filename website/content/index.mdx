@@ -16,7 +16,8 @@ release, use the documentation in that release's Git tag and review the
 | Need | Start here |
 |---|---|
 | Try the API without model downloads | [Core quickstart](quickstart) |
-| Run an actual local model | [Native Laya setup](laya) |
+| Run a local ONNX model | [Laya ONNX setup](laya) |
+| Use original weights with ggml/CUDA | [Native laya.cpp backend](../../docs/NATIVE.md) |
 | Inject JSON and ask several typed questions | [System One API](system-one) |
 | Integrate with a service or event loop | [Concurrency and Asio](concurrency) |
 | Inspect p95 and recent outcomes | [Observability](observability) |
@@ -26,7 +27,8 @@ release, use the documentation in that release's Git tag and review the
 
 - C++20 core with explicit success, abstention and technical-error paths.
 - Optional Laya backend using ONNX Runtime CPU or explicit CUDA and native tokenization.
-- Multi-field inference in one ONNX batch, with metadata and shared input.
+- Optional native laya.cpp/ggml backend using safetensors, CPU or explicit CUDA.
+- Multi-field batch inference with metadata and shared input on either backend.
 - Diagnostics snapshots, Prometheus export and an optional loopback HTTP view.
 
 An optional [bounded worker pool](batching) provides owned future submission,
@@ -44,4 +46,5 @@ decision: evaluate quality and abstention on your domain.
 [Report an issue](https://github.com/wiatrM/jevtpp/issues)
 
 The core is MIT-licensed. Model artifacts have separate provenance and
-licenses documented in [Laya setup](laya).
+licenses documented in [Laya ONNX setup](laya) and the
+[native backend guide](../../docs/NATIVE.md).

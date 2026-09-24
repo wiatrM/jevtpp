@@ -8,7 +8,7 @@
   "navigation": {
     "groups": [
       { "group": "Start here", "pages": ["index", "quickstart"] },
-      { "group": "Use the library", "pages": ["system-one", "laya", "concurrency", "batching", "observability"] },
+      { "group": "Use the library", "pages": ["system-one", "laya", "native", "concurrency", "batching", "observability"] },
       { "group": "Operate and optimize", "pages": ["performance", "performance-tuning", "precision", "production", "architecture"] }
     ]
   },

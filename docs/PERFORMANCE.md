@@ -248,8 +248,11 @@ Its [optimized arithmetic](https://github.com/lkarlslund/laya.cpp/blob/e1c6e7832
 uses compensated FP16 Tensor Core products for its FP32 mode, fused QKV/rotary
 and GELU operations, plus reusable GPU graphs. Its FP32 fused-attention path is
 limited to sequences through 128 tokens; longer sequences use cuBLAS attention.
-JevT++ does not implement these custom kernels or graph replay. Our TF32-off ORT
-path is not equivalent to their `--tensor-core-fp32 --flash-fp32` flags.
+Our TF32-off ORT path is not equivalent to their
+`--tensor-core-fp32 --flash-fp32` flags. The optional
+[native backend](NATIVE.md) now exposes those upstream optimizations through
+the existing JevT++ interface; it does not reimplement or claim authorship of
+their kernels.
 
 Their [published measurements](https://github.com/lkarlslund/laya.cpp/blob/e1c6e7832189d36903e90c6fe3b8b1fece7f6f17/docs/measurements/readme-performance.json)
 use RTX PRO 6000 Blackwell 96 GB, a varied 250-question corpus and matching-
@@ -263,5 +266,69 @@ Their [methodology](https://github.com/lkarlslund/laya.cpp/blob/e1c6e7832189d369
 validates precision against a same-precision baseline; BF16 agreement is not
 FP32 agreement. These architectural differences are plausible contributors, not
 a measured breakdown of the gap. A fair comparison needs identical hardware,
-corpus, shape groups, precision, output contract and timing boundaries. We have
-not executed that head-to-head comparison or integrated their backend.
+corpus, shape groups, precision, output contract and timing boundaries.
+
+## Reproduce an ONNX/native comparison
+
+### Matched local CUDA results, 2026-09-24
+
+RTX 4090 (24 GB), driver 591.86, Ubuntu 24.04 under WSL2, GCC 13.3,
+CUDA toolkit 13.1.115, ORT GPU 1.29.0, two ORT intra-op threads, TF32 off.
+The native engine is the pinned revision above, with `optimized_fp32` selected.
+Both model bundles were SHA-256 verified by the download scripts. Both engines
+remain loaded in one process. There were five warmups and 100 measured pairs
+per case, alternating execution order, on a shared workstation.
+
+| Input / field count | ORT p50 / p95 (ms) | Native p50 / p95 (ms) | Measured call-time ratio |
+|---|---:|---:|---:|
+| Short / 1 | 6.358 / 9.731 | 2.197 / 2.478 | 2.97x |
+| Short / 4 | 8.718 / 13.888 | 4.513 / 7.196 | 1.87x |
+| Full JSON / 1 | 6.969 / 11.160 | 3.370 / 3.896 | 2.30x |
+| Full JSON / 4 | 10.828 / 12.941 | 5.887 / 7.748 | 1.83x |
+| JSON + 1024 repeated words / 1 | 24.431 / 25.697 | 15.048 / 15.685 | 1.63x |
+| JSON + 1024 repeated words / 4 | 100.091 / 106.112 | 61.436 / 66.405 | 1.62x |
+| JSON + 4096 repeated words / 1 | 27.740 / 29.825 | 16.280 / 17.347 | 1.71x |
+| JSON + 4096 repeated words / 4 | 100.217 / 117.935 | 59.525 / 69.387 | 1.68x |
+
+All eight cases passed probability and exact-argmax gates, with zero call errors.
+The largest absolute probability difference was `3.15904617e-6`, below `1e-4`.
+Ratios use sums of measured call wall times, not reciprocal p50. Full JSON / four
+fields measured 89.57 versus 163.67 successful calls per second of measured
+engine call time; this alternating closed-loop probe is not a service-capacity
+or concurrent-load result. Original model loading was approximately 3.49 s for
+ORT and 3.18 s for native; first calls and later shape transitions are retained
+separately in the [complete sample report](../benchmarks/results/2026-09-24-native-engine-cuda.json).
+
+This demonstrates a local improvement, not a best-in-class ranking, paid Jev
+comparison, or production p95 guarantee. The long fixtures include more input
+words than the model can consume: both backends truncate to the checkpoint
+budget, while their measured calls still include tokenization. No labeled domain
+accuracy claim follows from matching these outputs. Native CPU also passed the
+same eight-case probability gate; its run overlapped compilation and is not
+published as a performance measurement.
+
+Build both adapters with `JEVT_ENABLE_LAYA=ON` and
+`JEVT_ENABLE_LAYA_NATIVE=ON`; enable `JEVT_LAYA_NATIVE_CUDA` for CUDA runs.
+Use the two pinned download scripts for matching source-model provenance.
+
+```sh
+build/benchmarks/jevt_backend_compare \
+  --onnx-model models/laya-multilingual \
+  --native-model models/laya-native-multilingual \
+  --provider cuda --native-mode optimized_fp32 \
+  --threads 2 --warmup 5 --repetitions 100 > comparison.json
+```
+
+The harness alternates execution order and measures both adapters until their
+probabilities are readable on the CPU. It exercises one/four fields and
+short/full/long serialized contexts, retaining individual samples, errors and
+probabilities. Each preflight, warmup and timed pair must agree in argmax and
+within `1e-4` absolute probability. Any failing case suppresses every accepted
+speedup ratio; exit code 2 means parity failure, not a successful optimization.
+
+These are repeated-input microbenchmarks, not production traffic or a labeled
+quality evaluation. Long inputs are truncated by model budgets. Native ggml
+also computes the upstream action head, whereas the ONNX adapter consumes
+decision logits. Report this extra work and the precision policies alongside
+results. Initialize native CUDA first because upstream sets process-wide math
+policy; benchmark initialization uses that order.

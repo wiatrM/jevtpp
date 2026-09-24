@@ -6,14 +6,15 @@ description: Current thread-safety contract, async limitations and service integ
 ## Current contract
 
 `choose()` and `evaluate()` are synchronous. A call owns the CPU thread until
-the backend returns. The Laya adapter calls blocking ONNX Runtime inference;
+the backend returns. Both Laya backends call blocking model inference;
 wrapping it in a coroutine does not make its computation asynchronous.
 
 | Capability | Current status |
 |---|---|
 | Concurrent calls through a bound handle | Supported only when the supplied backend is thread-safe |
-| Laya tokenizer access | Serialized by an internal tokenizer mutex |
-| Laya inference | Shared ORT session; exclusive per-call tensor buffers can be reused after completion |
+| ONNX Laya tokenizer access | Serialized by an internal tokenizer mutex |
+| ONNX Laya inference | Shared ORT session; exclusive per-call tensor buffers can be reused after completion |
+| Native laya.cpp inference | Calls on one backend are internally serialized to protect mutable graph state |
 | Diagnostics recording and snapshots | Internally synchronized |
 | `choose_async(std::string)` | `std::async(std::launch::async)` returning `std::future` |
 | Bounded workers and microbatching | Optional `jevt::batching_backend` wrapper |
@@ -52,6 +53,12 @@ Include `<jevt/batching.hpp>` and wrap a shared backend in
 total text bytes to reduce length variation within a batch; results retain
 caller order. With multiple workers, the wrapped backend must be thread-safe.
 
+The [native laya.cpp backend](../../docs/NATIVE.md) is safe to share but serializes
+execution on one instance. Increasing `worker_count` against that instance
+does not add simultaneous GPU runs. Start with one worker and tune batch size
+and delay. Separate native instances duplicate resident model/graph state;
+measure memory and contention before using several on the same device.
+
 `submit(request)` copies all request text, including option labels, before
 returning a future. `predict()` and `predict_batch()` remain synchronous and
 wait for their queued results. A full queue returns `error_code::overloaded`;
@@ -67,7 +74,7 @@ request-count limit, so enforce input byte limits in the application too.
 completions and executed batches.
 
 `shutdown()` stops admission, drains accepted work and joins workers. It
-waits for the wrapped backend to return and does not cancel ONNX inference.
+waits for the wrapped backend to return and does not cancel model inference.
 Do not destroy the wrapper from one of its backend callbacks or while callers
 still access it. Recursive synchronous calls and shutdown from its own workers
 are rejected. The wrapper supplies neither coroutine support nor an Asio
@@ -85,13 +92,19 @@ This is an integration pattern, **not a shipped adapter**:
 4. Deliver the result on the handler's associated executor, preserving its
    work guard and owned application state.
 5. If a request expires, suppress late delivery according to your service's
-   contract. Expiry does not stop an already-running ONNX call.
+   contract. Expiry does not stop an already-running model call.
 6. On shutdown, stop admissions and drain/join inference workers before
    destroying resources used by their completion handlers.
 
 Budget both the number of workers and ORT intra-op threads. Eight inference
 workers each creating their own large ORT pool can worsen p95 through CPU
 oversubscription. Measure queue delay separately from execution time.
+
+Native graph reuse also depends on batch/sequence/option shape. Length buckets
+can reduce shape variation but are byte-based hints, not fixed tensor-shape
+guarantees. Warmup and steady-state measurements should cover the actual shapes
+your service sends. Native ggml replay is owned by the serialized backend;
+it does not change the synchronous lifetime contract.
 
 A future Asio adapter should support completion tokens, associated
 executors/allocators, `use_awaitable`, cancellation semantics

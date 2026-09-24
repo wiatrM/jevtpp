@@ -5,7 +5,7 @@ import path from 'node:path';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const repo = path.resolve(root, '..');
 const references = {
-  'system-one': 'docs/SYSTEM_ONE.md', laya: 'docs/LAYA.md',
+  'system-one': 'docs/SYSTEM_ONE.md', laya: 'docs/LAYA.md', native: 'docs/NATIVE.md',
   observability: 'docs/OBSERVABILITY.md', performance: 'docs/PERFORMANCE.md',
   architecture: 'docs/ARCHITECTURE.md',
   batching: 'docs/BATCHING.md', precision: 'docs/PRECISION.md',

@@ -3,9 +3,12 @@ title: Performance controls
 description: Ten implemented controls and experiments, with validation and limitations.
 ---
 
-The native C++ CUDA adapter is available on `main`; CPU remains the default.
+Two optional backends expose CUDA: ONNX Runtime and the
+[native laya.cpp/ggml adapter](../../docs/NATIVE.md). CPU remains the default.
 These controls target different costs, and enabling every switch does not
 necessarily improve latency. Read the [measurements](performance) first.
+Options named `laya_options` in the table apply to the ONNX backend; native
+execution has its own provider and precision options described below.
 
 | Priority | Change | Expected benefit and status |
 |---|---|---|
@@ -19,6 +22,42 @@ necessarily improve latency. Read the [measurements](performance) first.
 | 8 | Reusable buffers and I/O binding | Isolated host buffer leases, capped retention; optional ORT I/O binding with host inputs and output. Still performs device copies; no CUDA Graphs or persistent device buffers. Not enabled by default. |
 | 9 | Precision experiments | Opt-in FP16/INT8 conversion and [quality/parity gates](precision). Conversion success alone does not qualify a candidate for deployment. |
 | 10 | Diagnostics sampling | `recent_sample_every` controls detailed traces without sampling counters/histograms. Contention benchmark included; no default p95 speedup claimed. |
+
+## Native optimized FP32
+
+The native adapter is a separate execution path using original safetensors
+checkpoints. Set `laya_native_options::provider` to
+`laya_native_provider::cuda` and `precision` to
+`laya_native_precision::optimized_fp32` to select upstream compensated Tensor
+Core projections. Its specialized FP32 attention kernel covers sequence
+lengths up to 128 tokens; longer sequences use cuBLAS attention. This boundary
+selects a kernel and does not limit the model context to 128 tokens.
+
+The native runtime keeps weights resident and reuses its current compute
+graphs and allocations. Shape changes can rebuild graphs. One backend
+serializes calls to protect this state; use a single bounded batching worker
+as a starting point and tune with realistic inputs. Native ggml CUDA Graph
+replay is distinct from ONNX Runtime CUDA Graph capture.
+
+Optimized FP32 and BF16 are explicit modes, not automatic promotions after a
+benchmark. BF16 additionally requires the upstream validated toolchain.
+Validate matching-precision probabilities and domain quality. Upstream's
+published GPU results do not establish this adapter's speed on your hardware.
+
+## Why the ONNX adapter does not enable CUDA Graphs
+
+ORT requires every node to run on CUDA, fixed input/output shapes and device
+addresses for each graph ID, and serialized calls on the captured session.
+The profiled Laya export assigns shape operations to CPU, so it does not meet
+that requirement. Host I/O binding does not fix placement or provide stable
+device buffers. See the official
+[CUDA Graph constraints](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html#using-cuda-graphs-preview).
+
+Persistent device buffers can be evaluated independently of graph capture,
+but require bounded allocation, ownership through execution, and synchronization
+before reading or reusing outputs. Capturing each new shape is not an unbounded
+cache strategy: ORT retains captures for the session lifetime. The current
+ONNX adapter exposes reusable host buffers, not a persistent-device-buffer API.
 
 ## What to measure for each change
 

@@ -1,9 +1,13 @@
-# Native Laya inference
+# Laya through ONNX Runtime
 
 `jevt::laya` connects the typed decision API to a local Laya model through ONNX
 Runtime and the Hugging Face tokenizer implementation in `tokenizers-cpp`.
 Python is used only by the optional download and reference-validation tools;
 inference runs inside the C++ process.
+
+For model-specific ggml kernels and native CUDA graph reuse, see the optional
+[laya.cpp backend](NATIVE.md). Both implement the same typed decision API;
+their model artifacts and execution controls differ.
 
 ## Build and run
 

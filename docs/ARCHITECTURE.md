@@ -155,6 +155,20 @@ tokens are wiped before storage returns to the pool. Limits on cache entries,
 retained payload capacity and pooled buffers are configurable. Warmup runs
 representative caller-supplied requests through the same session.
 
+## Optional native ggml adapter
+
+`jevt::laya_native` implements the same backend boundary using pinned
+`laya.cpp` and original safetensors weights. It uses the native tokenizer and
+raw runtime logits, preserving duplicate options and unrounded calibrated
+probabilities rather than passing through upstream JSON output. Its bounded
+schema cache and batch-local context reuse do not retain answer results.
+
+The runtime owns resident weights, reusable allocations and shape-dependent
+compute graphs. One instance serializes calls to protect this mutable state.
+CUDA optimized FP32 is explicit; CPU strict FP32 remains the default. Native
+ggml graph replay is independent of ORT I/O binding and CUDA Graph capture.
+See [native setup, precision and deployment constraints](NATIVE.md).
+
 ## Concurrency and lifetime
 
 Bound decisions are cheap handles to shared backend state. Calls may run

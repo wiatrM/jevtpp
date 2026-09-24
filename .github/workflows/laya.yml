@@ -10,7 +10,7 @@ permissions:
 jobs:
   model-and-contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -18,8 +18,12 @@ jobs:
           python-version: '3.12'
       - name: Install fixture generator dependency
         run: python -m pip install onnx==1.23.0 onnxruntime==1.29.0 tokenizers==0.23.2
+      - name: Install native tokenizer dependency
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libicu-dev
       - name: Precision tool regression tests
         run: python tests/precision_tools_test.py
+      - name: Offline model downloader regressions
+        run: python tests/fetch_laya_test.py -v
       - name: Download pinned ONNX Runtime SDK
         run: |
           curl --fail --location --retry 3 -o "$RUNNER_TEMP/ort.tgz" https://github.com/microsoft/onnxruntime/releases/download/v1.29.1/onnxruntime-linux-x64-1.29.1.tgz
@@ -27,19 +31,40 @@ jobs:
           tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: models/laya-multilingual
-          key: laya-${{ hashFiles('scripts/fetch_laya.py') }}
+          path: |
+            models/laya-multilingual
+            models/laya-native-multilingual
+          key: laya-paired-${{ hashFiles('scripts/fetch_laya.py', 'scripts/fetch_laya_native.py') }}
       - name: Download or verify pinned model
-        run: python scripts/fetch_laya.py models/laya-multilingual
+        run: |
+          python scripts/fetch_laya.py models/laya-multilingual
+          python scripts/fetch_laya_native.py models/laya-native-multilingual
       - name: Configure native backend
         run: >-
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DJEVT_ENABLE_LAYA=ON
+          -DJEVT_ENABLE_LAYA_NATIVE=ON
+          -DJEVT_LAYA_NATIVE_CUDA=OFF
           -DONNXRUNTIME_ROOT="$RUNNER_TEMP/onnxruntime-linux-x64-1.29.1"
           -DJEVT_LAYA_MODEL_DIR="$GITHUB_WORKSPACE/models/laya-multilingual"
+          -DJEVT_LAYA_NATIVE_MODEL_DIR="$GITHUB_WORKSPACE/models/laya-native-multilingual"
       - run: cmake --build build --parallel 2
       - run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+      - name: Gate paired CPU output parity (not a latency assertion)
+        run: >-
+          build/benchmarks/jevt_backend_compare
+          --onnx-model models/laya-multilingual
+          --native-model models/laya-native-multilingual
+          --provider cpu --native-mode strict_fp32
+          --threads 2 --warmup 1 --repetitions 1 > backend-parity.json
       - name: Reject malformed ONNX contracts
         run: |
           python tests/laya_contract_fixtures.py "$RUNNER_TEMP/contracts"
           build/tests/jevt_laya_integration_tests models/laya-multilingual "$RUNNER_TEMP/contracts"
+      - name: Retain paired parity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-cpu-parity
+          path: backend-parity.json
+          if-no-files-found: ignore

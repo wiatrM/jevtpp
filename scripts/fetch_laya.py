@@ -32,23 +32,29 @@ def digest(path: pathlib.Path) -> str:
     return sha.hexdigest()
 
 
-def fetch(relative: str, expected: str, destination: pathlib.Path) -> None:
+def fetch(relative: str, expected: str, destination: pathlib.Path, *,
+          repository: str = REPOSITORY, revision: str = REVISION,
+          remote_prefix: str = REMOTE_PREFIX) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_file() and digest(destination) == expected:
         print(f"verified  {relative}")
         return
-    remote = f"{REMOTE_PREFIX}/{relative}"
-    url = f"https://huggingface.co/{REPOSITORY}/resolve/{REVISION}/{remote}?download=true"
+    remote = f"{remote_prefix}/{relative}"
+    url = f"https://huggingface.co/{repository}/resolve/{revision}/{remote}?download=true"
     print(f"download  {relative}")
-    with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as temporary:
-        temporary_path = pathlib.Path(temporary.name)
-        with urllib.request.urlopen(url) as response:
-            shutil.copyfileobj(response, temporary, length=1024 * 1024)
-    actual = digest(temporary_path)
-    if actual != expected:
-        temporary_path.unlink(missing_ok=True)
-        raise RuntimeError(f"SHA-256 mismatch for {relative}: expected {expected}, got {actual}")
-    temporary_path.replace(destination)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as temporary:
+            temporary_path = pathlib.Path(temporary.name)
+            with urllib.request.urlopen(url) as response:
+                shutil.copyfileobj(response, temporary, length=1024 * 1024)
+        actual = digest(temporary_path)
+        if actual != expected:
+            raise RuntimeError(f"SHA-256 mismatch for {relative}: expected {expected}, got {actual}")
+        temporary_path.replace(destination)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def main() -> int:

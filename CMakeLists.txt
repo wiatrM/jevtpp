@@ -13,6 +13,10 @@ option(JEVT_BUILD_BENCHMARKS "Build benchmark runner" ON)
 option(JEVT_BUILD_EXAMPLES "Build examples" ON)
 option(JEVT_ENABLE_HTTP "Build the optional diagnostics HTTP server" ON)
 option(JEVT_ENABLE_LAYA "Build the native ONNX Runtime Laya adapter" OFF)
+option(JEVT_ENABLE_LAYA_NATIVE "Build the optional laya.cpp/ggml adapter" OFF)
+option(JEVT_LAYA_NATIVE_CUDA "Enable CUDA in the laya.cpp adapter" OFF)
+set(JEVT_LAYA_NATIVE_SOURCE_DIR "" CACHE PATH "Optional existing pinned laya.cpp source with submodules")
+set(JEVT_LAYA_NATIVE_MODEL_DIR "" CACHE PATH "Safetensors bundle for native integration tests")
 option(JEVT_FETCH_TOKENIZERS_CPP "Fetch the pinned tokenizers-cpp dependency" ON)
 set(JEVT_LAYA_MODEL_DIR "" CACHE PATH "Model bundle used by the opt-in Laya integration test")
 
@@ -72,6 +76,10 @@ if(JEVT_ENABLE_LAYA)
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+if(JEVT_ENABLE_LAYA_NATIVE)
+  include(cmake/LayaNative.cmake)
 endif()
 
 if(MSVC)

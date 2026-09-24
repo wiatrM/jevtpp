@@ -18,6 +18,11 @@
 
 ### Added
 
+- Optional pinned `laya.cpp`/ggml backend: CPU strict FP32 and explicit CUDA
+  optimized FP32, native graph reuse, bounded schema cache and shared-context
+  tokenization under the existing typed API. Safetensors downloads verify SHA-256.
+- Same-process ONNX/native comparison with alternating execution order, retained
+  samples, exact category agreement and a `1e-4` probability gate for speedups.
 - GitHub Pages documentation with local search, portable MDX and a generated
   Mintlify content bundle.
 - CPU/Python/CUDA comparison harnesses and attributed performance measurements.
@@ -32,8 +37,10 @@
 - Exact metrics with sampled recent traces; diagnostics contention and concurrent
   Laya load benchmarks; opt-in FP16/INT8 conversion and quality/parity gates.
 
-No Asio adapter, coroutine API, persistent CUDA device-buffer pool or CUDA Graph
-replay is provided. Precision candidates are not enabled by default.
+No Asio adapter or coroutine API is provided. The ONNX adapter does not provide
+a persistent CUDA device-buffer pool or CUDA Graph replay; the optional native
+backend uses ggml's graph/allocation reuse. Precision candidates are not enabled
+by default.
 
 ## 0.2.0
 

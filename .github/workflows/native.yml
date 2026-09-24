@@ -1,0 +1,98 @@
+name: Native Laya CPU integration
+
+on:
+  push:
+    paths: ['src/**', 'include/**', 'tests/**', 'scripts/**', 'CMakeLists.txt', 'cmake/**', '.github/workflows/native.yml']
+  pull_request:
+    paths: ['src/**', 'include/**', 'tests/**', 'scripts/**', 'CMakeLists.txt', 'cmake/**', '.github/workflows/native.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-cpu-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential cmake ninja-build libicu-dev
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models/laya-native-multilingual
+          key: laya-native-${{ hashFiles('scripts/fetch_laya_native.py', 'scripts/fetch_laya.py') }}
+
+      - name: Download or verify pinned safetensors checkpoint
+        run: python scripts/fetch_laya_native.py models/laya-native-multilingual
+
+      - name: Offline model downloader regressions
+        run: python tests/fetch_laya_test.py -v
+
+      - name: Configure native-only CPU build
+        run: >-
+          cmake -S . -B build-native -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INSTALL_LIBDIR=lib
+          -DJEVT_ENABLE_LAYA=OFF
+          -DJEVT_ENABLE_LAYA_NATIVE=ON
+          -DJEVT_LAYA_NATIVE_CUDA=OFF
+          -DJEVT_BUILD_TESTS=ON
+          -DJEVT_BUILD_EXAMPLES=OFF
+          -DJEVT_BUILD_BENCHMARKS=OFF
+          -DJEVT_LAYA_NATIVE_MODEL_DIR="$GITHUB_WORKSPACE/models/laya-native-multilingual"
+
+      - name: Build native adapter and tests
+        run: cmake --build build-native --target jevt_laya_native_tests --parallel 2
+
+      - name: Test native configuration errors
+        run: ctest --test-dir build-native -R '^jevt_laya_native_tests$' --output-on-failure --no-tests=error --timeout 60
+
+      - name: Test real-model CPU batching and graph reuse
+        run: ctest --test-dir build-native -R '^jevt_laya_native_integration_tests$' --output-on-failure --no-tests=error --timeout 300
+
+      - name: Install exported package
+        run: cmake --install build-native --prefix "$RUNNER_TEMP/jevtpp-native-install"
+
+      - name: Configure and test installed CMake consumer
+        run: |
+          cmake -S tests/consumer -B consumer-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/jevtpp-native-install"
+          cmake --build consumer-build --parallel 2
+          ctest --test-dir consumer-build --output-on-failure --no-tests=error --timeout 60
+
+      - name: Link and load installed native adapter
+        # Reuse the public-header test fixture against installed artifacts,
+        # without exposing the native engine's private headers or build tree.
+        run: |
+          c++ -std=c++20 -O2 -pthread \
+            -I "$RUNNER_TEMP/jevtpp-native-install/include" \
+            tests/laya_native_test.cpp \
+            -L "$RUNNER_TEMP/jevtpp-native-install/lib" \
+            -Wl,-rpath,"$RUNNER_TEMP/jevtpp-native-install/lib" \
+            -ljevt_laya_native -ljevt \
+            -o "$RUNNER_TEMP/jevtpp-installed-native-test"
+          "$RUNNER_TEMP/jevtpp-installed-native-test" \
+            "$GITHUB_WORKSPACE/models/laya-native-multilingual" cpu
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-cpu-test-logs
+          path: |
+            build-native/Testing/Temporary/
+            consumer-build/Testing/Temporary/
+          if-no-files-found: ignore

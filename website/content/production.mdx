@@ -17,9 +17,9 @@ release and model revision; validate your own deployment configuration.
 - Load-test representative lengths and field counts at expected concurrency.
   Define a queue limit, timeout policy, memory ceiling and rejection behavior.
 - Verify shutdown with in-flight inference and active diagnostic connections.
-  The library does not cancel ONNX inference on an application deadline.
+  The library does not cancel model inference on an application deadline.
 - Test the installed CMake package, not just an in-tree executable. Deploy the
-  matching ONNX shared library and model/tokenizer artifacts explicitly.
+  matching backend runtime libraries and model/tokenizer artifacts explicitly.
 - Run sanitizer and OS/toolchain checks. Optional backends need their own
   checks; a green core-only matrix does not establish backend portability.
 
@@ -50,7 +50,7 @@ Report vulnerabilities through the repository's
 
 | Area | Current boundary |
 |---|---|
-| Accelerator support | CPU by default; explicit CUDA requires a compatible ONNX Runtime GPU build and device |
+| Accelerator support | CPU by default; explicit CUDA uses either a compatible ONNX Runtime GPU build or the optional native laya.cpp build |
 | Async integration | Bounded workers, microbatching and future submission are available; no coroutine/Asio adapter or running-inference cancellation |
 | Quality | Eight-ticket example set is a smoke test, not a representative benchmark |
 | Confidence | Distribution concentration/threshold policies, not a domain accuracy guarantee |
@@ -69,6 +69,26 @@ Optional `use_io_binding` binds reusable host tensors. ONNX Runtime still
 performs device transfers; this is not zero-copy or CUDA-graph execution.
 Test the chosen provider, thread settings, batch sizes and representative
 inputs before enabling them in a service.
+
+The [native laya.cpp adapter](../../docs/NATIVE.md) uses a safetensors checkpoint
+and separate build dependencies. Pin the runtime, ggml submodule, model revision
+and CUDA compiler/math-library versions. Its CPU strict-FP32 default,
+CUDA optimized-FP32 mode and opt-in BF16 mode are distinct validation targets.
+BF16 is rejected when the upstream required toolchain profile is unavailable.
+Initialize native CUDA backends before other CUDA consumers because the pinned
+runtime sets process-wide CUDA math policy. Validate initialization order when
+embedding multiple GPU libraries in one service.
+
+One native instance serializes calls and reuses mutable graph state. Exercise
+changing lengths, batch sizes, option counts and repeated calls when qualifying
+a build; a single warmed shape does not cover this behavior. Native ggml CUDA
+Graph replay is not ONNX Runtime CUDA Graph support. The latter remains
+unavailable for the profiled ONNX graph's mixed CPU/CUDA placement.
+
+Upstream laya.cpp supports other accelerators and serving features; JevT++'s
+native wrapper currently exposes in-process CPU/CUDA inference only. Do not
+treat upstream benchmarks on different hardware as deployment evidence for
+this wrapper.
 
 `jevt::batching_backend` supplies bounded queue admission and an optional
 worker pool around a backend. Configure request capacity, worker count, batch

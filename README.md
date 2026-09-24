@@ -15,8 +15,8 @@
 
 JevT++ turns runtime text, JSON or application objects into enums, boolean
 decisions and scores your code can use directly. Define the available answers
-and their meaning once; supply new context on every call. The optional Laya
-adapter runs inference inside your process with ONNX Runtime.
+and their meaning once; supply new context on every call. Optional Laya
+backends run inference inside your process with ONNX Runtime or native ggml.
 
 - **Typed vocabulary:** compile-time schemas, enum rubrics and explicit abstention.
 - **Shared context:** evaluate several independent fields in one Laya batch.
@@ -25,7 +25,7 @@ adapter runs inference inside your process with ONNX Runtime.
 - **Small core:** no Python runtime, JSON library or ONNX dependency unless you enable the adapter.
 
 [Documentation](https://wiatrm.github.io/jevtpp/) · [Quick start](#build-and-test) · [System One API](docs/SYSTEM_ONE.md) ·
-[Laya setup](docs/LAYA.md) · [Performance](docs/PERFORMANCE.md) ·
+[ONNX setup](docs/LAYA.md) · [Native CPU/CUDA](docs/NATIVE.md) · [Performance](docs/PERFORMANCE.md) ·
 [Runnable demo](examples/laya_routing_demo.cpp)
 
 JevT++ is an independent open-source library. It is not the proprietary Jev
@@ -165,6 +165,14 @@ A separate **Python + CUDA experiment** on an RTX 4090 reached **14.1 ms p50 /
 GPU support in the released v0.2.0 adapter**. Current `main` now includes native
 C++ CUDA selection, warmup, bounded batching and cache/buffer controls. See the report for numerical parity
 and hardware/runtime details; this is not a quality comparison with Jev.
+
+The optional [native laya.cpp/ggml backend](docs/NATIVE.md) now provides another
+path. In a matched RTX 4090 run (100 warmed pairs, full JSON/four fields), ONNX
+measured **10.83 / 12.94 ms p50/p95**, versus native optimized FP32 at
+**5.89 / 7.75 ms**. All eight short/long, one/four-field cases passed a `1e-4`
+probability and exact-argmax gate. These are local repeated-input measurements,
+not a best-in-class or production-latency guarantee. Full samples and the
+reproduction command are in the performance report below.
 
 See [measurements, methodology and reproduction](docs/PERFORMANCE.md) for the
 local results and separately attributed Jev/GPU measurements. The keyword
