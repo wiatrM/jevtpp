@@ -49,6 +49,14 @@ for (const target of ['src/content/docs', '.mintlify']) {
 await copyFile(path.join(root, 'docs.json'), path.join(root, '.mintlify/docs.json'));
 await copyFile(path.join(repo, 'docs/assets/jevtpp-logo-readme.png'), path.join(root, '.mintlify/logo.png'));
 await copyFile(path.join(root, 'public/favicon.svg'), path.join(root, '.mintlify/favicon.svg'));
-await writeFile(path.join(root, 'public/llms.txt'), '# JevT++\n\n' + pages.map(slug =>
-  `- [${slug}](https://wiatrm.github.io/jevtpp/${slug === 'index' ? '' : slug + '/'})`).join('\n') + '\n');
+const overview = '# JevT++\n\n> Independent MIT-licensed C++20 library for typed model-backed routing, classification and scoring.\n\nApplication context becomes enum choices, boolean decisions or scores with explicit abstention. Local adapters run Laya through ONNX Runtime or native ggml; an opt-in remote backend implements the TypeSafe System One interface. This is not the proprietary Jev model or an official TypeSafe SDK. Remote tests use injected responses and loopback HTTP, not live-provider validation. Confidence is not measured accuracy. Features on main may be newer than the latest release.\n\n';
+await writeFile(path.join(root, 'public/llms.txt'), overview + '## Documentation\n\n' + pages.map(slug =>
+  `- [${slug}](https://wiatrm.github.io/jevtpp/${slug === 'index' ? '' : slug + '/'})`).join('\n') +
+  '\n\n## Source and releases\n\n- [Source](https://github.com/wiatrM/jevtpp)\n- [Releases](https://github.com/wiatrM/jevtpp/releases)\n- [Full documentation text](https://wiatrm.github.io/jevtpp/llms-full.txt)\n');
+const fullDocs = await Promise.all(pages.map(async slug => {
+  const route = `https://wiatrm.github.io/jevtpp/${slug === 'index' ? '' : slug + '/'}`;
+  const body = (await readFile(path.join(root, 'src/content/docs', `${slug}.mdx`), 'utf8')).replace(/^---\n[\s\S]*?\n---\n/, '');
+  return `## ${slug}\n\nSource: ${route}\n\n${body}`;
+}));
+await writeFile(path.join(root, 'public/llms-full.txt'), overview + fullDocs.join('\n\n---\n\n'));
 console.log(`Prepared ${pages.length} pages for Starlight and Mintlify.`);
