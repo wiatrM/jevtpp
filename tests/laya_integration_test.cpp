@@ -71,13 +71,72 @@ void check_distribution(std::span<const float> probabilities, std::size_t size) 
 void check_unit(float value) {
     require(std::isfinite(value) && value >= 0.0F && value <= 1.0F, "value outside [0, 1]");
 }
+
+void check_contract_fixtures(const std::filesystem::path& bundle,
+                             const std::filesystem::path& fixtures) {
+    require(std::filesystem::is_directory(fixtures), "contract fixture directory is missing");
+    const auto options = [&](const std::string& name) {
+        const auto model_file = fixtures / (name + ".onnx");
+        require(std::filesystem::is_regular_file(model_file), "contract fixture model is missing");
+        return jevt::laya_options{.model_directory = bundle, .model_file = model_file,
+                                  .intra_op_threads = 1};
+    };
+    const auto rejected_at_load = [&](const std::string& name, const std::string& message) {
+        const auto config = options(name);
+        bool rejected = false;
+        try {
+            jevt::laya_backend backend(config);
+        } catch (const std::exception& exception) {
+            rejected = std::string{exception.what()}.find(message) != std::string::npos;
+            if (!rejected) throw;
+        }
+        require(rejected, "invalid graph contract was accepted");
+    };
+    for (const auto* input : {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"}) {
+        rejected_at_load(std::string{input} + "-dtype", std::string{"Laya input "} + input + " must be");
+        rejected_at_load(std::string{input} + "-rank", std::string{"Laya input "} + input + " must be");
+    }
+    rejected_at_load("logits-dtype", "Laya logits output must be FLOAT rank 2");
+    rejected_at_load("logits-rank", "Laya logits output must be FLOAT rank 2");
+    const jevt::inference_request request{.question = "Is this true?", .input = "Example",
+        .question_kind = jevt::inference_request::kind::noul};
+    const std::array requests{request, request};
+    for (const auto* name : {"logits-wide", "logits-reshaped", "logits-short", "logits-nan",
+                             "logits-inf", "logits-negative-inf"}) {
+        jevt::laya_backend backend(options(name));
+        const auto result = backend.predict_batch(requests);
+        require(!result, "invalid logits were accepted");
+        require(result.error_value().code == jevt::error_code::invalid_backend_output,
+                "invalid logits must produce invalid_backend_output");
+        const auto expected = std::string_view{name}.find("inf") != std::string_view::npos ||
+                              std::string_view{name}.find("nan") != std::string_view::npos
+            ? "non-finite" : "exact shape";
+        require(result.error_value().message.find(expected) != std::string::npos,
+                "invalid logits diagnostic omitted the cause");
+    }
+    jevt::laya_backend valid(options("valid"));
+    const auto good = valid.predict_batch(requests);
+    require(static_cast<bool>(good), "valid contract fixture failed");
+    require(good->size() == 2, "valid fixture batch size changed");
+    for (const auto& response : *good) check_distribution(response.scores, 2);
+    const std::array<std::string_view, 1> single_option{"Only choice"};
+    const jevt::inference_request padded_request{.question = "Choose", .input = "Example",
+        .options = single_option};
+    const std::array padded_requests{padded_request, padded_request};
+    jevt::laya_backend padded(options("padded-negative-inf"));
+    const auto padded_result = padded.predict_batch(padded_requests);
+    require(static_cast<bool>(padded_result), "non-finite padding must be ignored");
+    for (const auto& response : *padded_result) check_distribution(response.scores, 1);
+    std::cout << "Laya contract: dtype/rank, exact shape, finite active logits, and padding passed\n";
+}
 } // namespace
 
 int main(int argc, char** argv) try {
-    if (argc != 2) {
-        std::cerr << "usage: jevt_laya_integration_tests MODEL_DIRECTORY\n";
+    if (argc != 2 && argc != 3) {
+        std::cerr << "usage: jevt_laya_integration_tests MODEL_DIRECTORY [CONTRACT_FIXTURE_DIRECTORY]\n";
         return 2;
     }
+    if (argc == 3) check_contract_fixtures(argv[1], argv[2]);
     auto real = jevt::models::laya_multilingual(std::filesystem::path{argv[1]}, 2);
     auto observed = std::make_shared<observed_backend>(real);
     const auto brain = jevt::bind_system_one(model, observed);

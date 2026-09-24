@@ -1,0 +1,16 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "JevT++",
+  "colors": { "primary": "#2563eb", "light": "#60a5fa", "dark": "#1d4ed8" },
+  "logo": { "light": "/logo.png", "dark": "/logo.png" },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      { "group": "Start here", "pages": ["index", "quickstart"] },
+      { "group": "Use the library", "pages": ["system-one", "laya", "concurrency", "observability"] },
+      { "group": "Operate and optimize", "pages": ["performance", "performance-tuning", "production", "architecture"] }
+    ]
+  },
+  "navbar": { "links": [{ "label": "GitHub", "href": "https://github.com/wiatrM/jevtpp" }] }
+}

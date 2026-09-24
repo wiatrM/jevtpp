@@ -64,6 +64,7 @@ struct Counters {
   std::uint64_t errors = 0;
   std::uint64_t abstains = 0;
   long double latency_sum_ms = 0.0;
+  double latency_max_ms = 0.0;
   std::vector<std::uint64_t> buckets;
 };
 
@@ -77,9 +78,10 @@ double percentile(const Counters& counters, const std::vector<double>& bounds,
     cumulative += counters.buckets[i];
     if (cumulative >= rank) {
       if (i < bounds.size()) return bounds[i];
-      // The overflow bucket has no upper bound; mean is a stable, finite
-      // fallback and avoids fabricating an infinity in JSON.
-      return static_cast<double>(counters.latency_sum_ms / counters.calls);
+      // The overflow bucket has no configured upper bound. Its observed
+      // maximum gives a conservative finite estimate without understating
+      // the tail or making a higher percentile smaller than a lower one.
+      return counters.latency_max_ms;
     }
   }
   return 0.0;
@@ -177,6 +179,7 @@ void Diagnostics::record_call(std::string_view decision, CallOutcome outcome,
     if (outcome == CallOutcome::error) ++counters.errors;
     if (outcome == CallOutcome::abstain) ++counters.abstains;
     counters.latency_sum_ms += latency_ms;
+    counters.latency_max_ms = std::max(counters.latency_max_ms, latency_ms);
     const auto bucket = std::lower_bound(impl_->options.histogram_bounds_ms.begin(),
                                          impl_->options.histogram_bounds_ms.end(),
                                          latency_ms);

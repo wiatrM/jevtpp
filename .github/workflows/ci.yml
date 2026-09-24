@@ -14,6 +14,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         build_type: [Debug, Release]
+        include:
+          - os: ubuntu-latest
+            build_type: Release
+            shared: 'ON'
+          - os: windows-latest
+            build_type: Release
+            shared: 'ON'
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -28,15 +35,38 @@ jobs:
           -DJEVT_BUILD_TESTS=ON
           -DJEVT_BUILD_EXAMPLES=ON
           -DJEVT_BUILD_BENCHMARKS=OFF
+          -DBUILD_SHARED_LIBS=${{ matrix.shared || 'OFF' }}
 
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }}
 
       - name: Test
+        if: runner.os != 'Windows'
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+      - name: Test on Windows
+        if: runner.os == 'Windows'
+        run: |
+          $env:PATH = "${{ github.workspace }}\build;$env:PATH"
+          ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
 
       - name: Install
         run: cmake --install build --config ${{ matrix.build_type }} --prefix "${{ github.workspace }}/install"
+
+      - name: Build installed consumer
+        run: >-
+          cmake -S tests/consumer -B consumer-build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install"
+      - run: cmake --build consumer-build
+      - name: Test installed consumer
+        if: runner.os != 'Windows'
+        run: ctest --test-dir consumer-build --output-on-failure --no-tests=error
+      - name: Test installed consumer on Windows
+        if: runner.os == 'Windows'
+        run: |
+          $env:PATH = "${{ github.workspace }}\install\bin;$env:PATH"
+          ctest --test-dir consumer-build --output-on-failure --no-tests=error
 
   benchmark-smoke:
     runs-on: ubuntu-latest
@@ -54,4 +84,21 @@ jobs:
         run: cmake --build build
       - name: Run short benchmark gate
         run: ctest --test-dir build -L benchmark-smoke --output-on-failure --no-tests=error
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure ASan and UBSan
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          -DJEVT_BUILD_BENCHMARKS=OFF -DJEVT_BUILD_EXAMPLES=OFF
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 60
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1
 

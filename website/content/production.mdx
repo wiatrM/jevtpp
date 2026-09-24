@@ -1,0 +1,62 @@
+---
+title: Production readiness
+description: Release validation, operating limits and the remaining integration boundaries.
+---
+
+JevT++ is pre-1.0 software. Passing unit tests is not evidence that a model
+meets your business accuracy, availability or latency requirements. Pin a
+release and model revision; validate your own deployment configuration.
+
+## Required validation before deploying
+
+- Exercise the real application inputs: Unicode, long context, malformed
+  backend output, empty state and all abstention/error paths.
+- Run the Laya contract/parity tests with the exact shipped runtime and model.
+  Keep a labeled holdout set covering every business category and escalation
+  boundary. Assess calibration and abstention as well as accuracy.
+- Load-test representative lengths and field counts at expected concurrency.
+  Define a queue limit, timeout policy, memory ceiling and rejection behavior.
+- Verify shutdown with in-flight inference and active diagnostic connections.
+  The library does not cancel ONNX inference on an application deadline.
+- Test the installed CMake package, not just an in-tree executable. Deploy the
+  matching ONNX shared library and model/tokenizer artifacts explicitly.
+- Run sanitizer and OS/toolchain checks. Optional backends need their own
+  checks; a green core-only matrix does not establish backend portability.
+
+## Security and operational boundaries
+
+Accept only trusted model bundles. Hash verification establishes artifact
+identity, not that an arbitrary ONNX graph is safe. Pin artifacts from a source
+you trust and apply the runtime vendor's security updates.
+
+Limit input size before tokenization. The adapter's token budget does not stop
+an application from accepting and copying a very large request first. Do not
+put raw customer data into diagnostic tags. Configure bounded retention and
+histogram bounds suited to actual latencies.
+
+The diagnostics HTTP server is a small, single-client-at-a-time loopback
+utility, not an authenticated public service. It uses socket idle timeouts and
+interrupts its active connection during shutdown. Those are not a substitute
+for authentication, TLS, rate limits or a total request deadline. Prefer
+exporting snapshots through the service's existing telemetry system.
+
+Report vulnerabilities through the repository's
+[security policy](https://github.com/wiatrM/jevtpp/blob/main/SECURITY.md).
+
+## Integration boundaries still open
+
+| Area | Current boundary |
+|---|---|
+| Accelerator support | C++ Laya adapter is CPU only; CUDA benchmark is exploratory |
+| Async integration | No production Asio adapter, bounded scheduler or cancellation API |
+| Quality | Eight-ticket example set is a smoke test, not a representative benchmark |
+| Confidence | Distribution concentration/threshold policies, not a domain accuracy guarantee |
+| Input structure | JSON is serialized context; syntax validation belongs to the caller |
+| Compatibility | Pre-1.0 APIs may change; review release notes and recompile consumers |
+
+## Release evidence
+
+Archive the commit, toolchain/runtime versions, model hashes, test results,
+quality report and load-test results for each deployment. CI is reproducible
+evidence of the scenarios it executes, not a blanket production certification.
+No new release tag is created merely by publishing these docs.

@@ -1,0 +1,47 @@
+---
+title: JevT++ documentation
+description: Build typed, local model-backed decisions into a C++20 application.
+---
+
+JevT++ maps runtime text, JSON and serialized application objects to your C++
+enums, boolean decisions and rubric scores. The vocabulary is defined at
+compile time; the input changes on every call.
+
+These pages track `main`, including unreleased hardening changes. For a pinned
+release, use the documentation in that release's Git tag and review the
+[changelog](https://github.com/wiatrM/jevtpp/blob/main/CHANGELOG.md).
+
+## Start with your integration
+
+| Need | Start here |
+|---|---|
+| Try the API without model downloads | [Core quickstart](quickstart) |
+| Run an actual local model | [Native Laya setup](laya) |
+| Inject JSON and ask several typed questions | [System One API](system-one) |
+| Integrate with a service or event loop | [Concurrency and Asio](concurrency) |
+| Inspect p95 and recent outcomes | [Observability](observability) |
+| Evaluate latency or release readiness | [Measurements](performance), [production checklist](production) |
+
+## What runs today
+
+- C++20 core with explicit success, abstention and technical-error paths.
+- Optional Laya backend using ONNX Runtime **CPU** and native tokenization.
+- Multi-field inference in one ONNX batch, with metadata and shared input.
+- Diagnostics snapshots, Prometheus export and an optional loopback HTTP view.
+
+The library does **not** currently provide CUDA selection, a hosted Jev client,
+an Asio adapter, cancellation or a bounded async scheduler. The Python/CUDA
+benchmark is a separate experiment, not a C++ feature.
+
+JevT++ is independent of TypeSafe. Its open-source Laya model is not the
+proprietary Jev model. Type-safe output does not guarantee a correct business
+decision: evaluate quality and abstention on your domain.
+
+## Useful links
+
+[Repository and examples](https://github.com/wiatrM/jevtpp) ·
+[Releases](https://github.com/wiatrM/jevtpp/releases) ·
+[Report an issue](https://github.com/wiatrM/jevtpp/issues)
+
+The core is MIT-licensed. Model artifacts have separate provenance and
+licenses documented in [Laya setup](laya).

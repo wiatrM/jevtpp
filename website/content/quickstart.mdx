@@ -1,0 +1,80 @@
+---
+title: Core quickstart
+description: Build the library and route a runtime string to an application enum.
+---
+
+## Build without a model
+
+Requirements: C++20 compiler and CMake 3.24 or newer. HTTP diagnostics can be
+disabled with `-DJEVT_ENABLE_HTTP=OFF`.
+
+```sh
+git clone https://github.com/wiatrM/jevtpp.git
+cd jevtpp
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure --no-tests=error
+```
+
+Run `build/examples/jevt_support_routing` (on multi-config generators, use
+`build/examples/Release/jevt_support_routing.exe`). This example uses
+deterministic keyword rules to demonstrate application control flow. It is
+**not** an AI quality or neural-inference benchmark.
+
+## Route a dynamic input
+
+```cpp
+#include <jevt/jevt.hpp>
+#include <memory>
+#include <string>
+
+enum class Team { billing, technical };
+constexpr auto teams = jevt::schema<Team, "support.team">(
+    jevt::option<Team::billing>("Invoices, payments and refunds"),
+    jevt::option<Team::technical>("Crashes, failures and outages"));
+
+int main() {
+    auto backend = std::make_shared<jevt::keyword_backend>(
+        jevt::keyword_backend::keyword_table{{"refund", "invoice"}, {"crash", "outage"}});
+    jevt::context runtime{{.inference_backend = backend}};
+    auto routing = runtime.bind(teams, {.question = "Which team owns this request?"});
+    std::string message = "Please refund the duplicate invoice";
+    auto result = routing.choose(message);
+    if (!result) return 1;             // Technical failure: inspect error_value().
+    if (result->abstained()) return 2; // Manual review, not a backend error.
+    return result->value() == Team::billing ? 0 : 3;
+}
+```
+
+`message` can come from a queue, an HTTP request or a file. Only `teams`, the
+output vocabulary, is compile-time data. Bind once and reuse the handle.
+
+## Link an installed package
+
+```sh
+cmake --install build --config Release --prefix ./install
+cmake -S /path/to/consumer -B consumer-build -DCMAKE_PREFIX_PATH="$PWD/install"
+```
+
+```cmake
+cmake_minimum_required(VERSION 3.24)
+project(my_service LANGUAGES CXX)
+find_package(jevtpp CONFIG REQUIRED)
+add_executable(my_service main.cpp)
+target_link_libraries(my_service PRIVATE jevt::jevt)
+```
+
+Consumers do not need ONNX Runtime for the core. For model-backed decisions,
+follow [Laya setup](laya) and link `jevt::laya`.
+
+## Errors and confidence
+
+Initialization and invalid binding configuration throw exceptions. Inference
+returns `jevt::result`: inspect errors before accessing the typed value and
+handle abstention explicitly. Application callbacks supplied as custom
+backends must translate their own exceptions into `jevt::error`.
+
+Single `choose()` uses the largest normalized score as confidence. System One
+Choice/Score use entropy-based confidence; Noul uses its true/false thresholds.
+Do not transfer one API's threshold blindly to another. Neither statistic is
+a measured accuracy guarantee. See [System One](system-one).

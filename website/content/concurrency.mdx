@@ -1,0 +1,72 @@
+---
+title: Concurrency, coroutines and Asio
+description: Current thread-safety contract, async limitations and service integration guidance.
+---
+
+## Current contract
+
+`choose()` and `evaluate()` are synchronous. A call owns the CPU thread until
+the backend returns. The Laya adapter calls blocking ONNX Runtime inference;
+wrapping it in a coroutine does not make its computation asynchronous.
+
+| Capability | Current status |
+|---|---|
+| Concurrent calls through a bound handle | Supported only when the supplied backend is thread-safe |
+| Laya tokenizer access | Serialized by an internal tokenizer mutex |
+| Laya inference | Shared ORT session, per-call tensors; application must bound concurrent requests |
+| Diagnostics recording and snapshots | Internally synchronized |
+| `choose_async(std::string)` | `std::async(std::launch::async)` returning `std::future` |
+| Coroutine / `co_await` API | Not provided |
+| Boost.Asio / standalone Asio adapter | Not provided |
+| Bounded queue, cancellation, deadlines, backpressure | Application responsibility |
+
+Input string views only need to remain alive for the synchronous call.
+`choose_async()` instead takes an owned string and copies the bound handle,
+keeping its backend alive. A custom backend must not retain request views
+after returning. Synchronizing the diagnostics registry does not make an
+application callback thread-safe.
+
+## The existing async convenience API
+
+```cpp
+auto pending = routing.choose_async(std::string{message});
+// Do independent work on this non-event-loop thread.
+auto result = pending.get(); // Blocks until inference is finished.
+```
+
+This API has no admission control and may create a thread per call. Destroying
+the last future produced by `std::async` may also wait for completion. Do not
+discard these futures expecting fire-and-forget behavior, and do not call
+`get()` on an I/O event-loop thread. Prefer the synchronous API behind your
+service's controlled executor for sustained load.
+
+## Integrating an Asio-based service today
+
+This is an integration pattern, **not a shipped adapter**:
+
+1. Validate request size and deadline on the I/O executor.
+2. Acquire capacity from a bounded inference queue; reject overload explicitly.
+3. Copy/own the input and binding, then run synchronous inference on a dedicated
+   worker executor. Do not post blocking inference back onto the I/O executor.
+4. Deliver the result on the handler's associated executor, preserving its
+   work guard and owned application state.
+5. If a request expires, suppress late delivery according to your service's
+   contract. Expiry does not stop an already-running ONNX call.
+6. On shutdown, stop admissions and drain/join inference workers before
+   destroying resources used by their completion handlers.
+
+Budget both the number of workers and ORT intra-op threads. Eight inference
+workers each creating their own large ORT pool can worsen p95 through CPU
+oversubscription. Measure queue delay separately from execution time.
+
+A future library adapter should support completion tokens, associated
+executors/allocators, `use_awaitable`, bounded admission, cancellation semantics
+and shutdown tests. Those are release criteria, not existing features.
+
+## Lifetime and global state
+
+Prefer explicit `jevt::context` in services, plugins and tests. `jevt::init()`
+replaces the process-wide default used for subsequent global binds; existing
+bindings retain their shared backend. Keep the returned `app` alive while
+using the global binding convenience functions. Keep any executor and callback
+captures alive until their scheduled work completes.

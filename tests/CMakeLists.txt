@@ -11,8 +11,23 @@ jevt_add_test(jevt_acceptance_tests acceptance_test.cpp)
 jevt_add_test(jevt_diagnostics_tests diagnostics_test.cpp)
 jevt_add_test(jevt_compile_success_tests compile_success_test.cpp)
 jevt_add_test(jevt_system_one_tests system_one_test.cpp)
+foreach(case IN ITEMS duplicate_option missing_handler)
+  if(case STREQUAL "duplicate_option")
+    set(expected "schema option values must be unique")
+  else()
+    set(expected "match requires each schema option exactly once")
+  endif()
+  add_test(NAME jevt_compile_fail_${case} COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}" "-DBINARY_DIR=${PROJECT_BINARY_DIR}"
+    "-DCOMPILER=${CMAKE_CXX_COMPILER}" "-DGENERATOR=${CMAKE_GENERATOR}"
+    "-DCASE=${case}" "-DEXPECTED=${expected}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/verify.cmake")
+endforeach()
 if(JEVT_ENABLE_HTTP)
   jevt_add_test(jevt_http_tests http_server_test.cpp)
+  if(WIN32)
+    target_link_libraries(jevt_http_tests PRIVATE ws2_32)
+  endif()
 endif()
 if(JEVT_ENABLE_LAYA AND JEVT_LAYA_MODEL_DIR)
   add_executable(jevt_laya_integration_tests laya_integration_test.cpp)

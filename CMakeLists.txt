@@ -6,6 +6,7 @@ project(JevTpp VERSION 0.2.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+find_package(Threads REQUIRED)
 
 option(JEVT_BUILD_TESTS "Build acceptance tests" ON)
 option(JEVT_BUILD_BENCHMARKS "Build benchmark runner" ON)
@@ -24,6 +25,7 @@ endif()
 
 add_library(jevt ${JEVT_SOURCES})
 add_library(jevt::jevt ALIAS jevt)
+target_link_libraries(jevt PUBLIC Threads::Threads)
 target_compile_features(jevt PUBLIC cxx_std_20)
 target_include_directories(jevt PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -31,7 +33,8 @@ target_include_directories(jevt PUBLIC
 if(WIN32 AND JEVT_ENABLE_HTTP)
   target_link_libraries(jevt PRIVATE ws2_32)
 endif()
-set_target_properties(jevt PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME jevt)
+set_target_properties(jevt PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME jevt
+  WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 if(JEVT_ENABLE_LAYA)
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)

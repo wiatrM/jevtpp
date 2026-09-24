@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+project(jevt_compile_negative LANGUAGES CXX)
+add_library(negative OBJECT "${CASE}.cpp")
+target_compile_features(negative PRIVATE cxx_std_20)
+target_include_directories(negative PRIVATE "${JEVT_SOURCE_DIR}/include")

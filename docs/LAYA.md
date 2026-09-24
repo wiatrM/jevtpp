@@ -55,6 +55,22 @@ its four distributions with the `probabilities:` line printed by
 `jevt_laya_integration_tests`; small floating-point differences between ONNX
 Runtime builds are expected.
 
+For negative contract tests, install Python `onnx` and generate tiny synthetic
+graphs, then supply their directory as the integration executable's second
+argument (the first remains the real model bundle):
+
+```sh
+python3 tests/laya_contract_fixtures.py /tmp/laya-contract-fixtures
+./build-laya/tests/jevt_laya_integration_tests \
+  models/laya-multilingual /tmp/laya-contract-fixtures
+```
+
+These 20 fixtures exercise wrong input/output dtypes and ranks, exact batch
+dimensions, non-finite active logits, and ignored masked padding. Construction
+checks the model's tensor contract; each inference validates the exact logits
+shape before reading scores. The Linux Laya CI workflow runs both the real
+model and these negative cases. Core-only CI is not a model-integration test.
+
 The downloader verifies SHA-256 hashes, reuses matching files and pins the
 model revision. Model weights are downloaded separately from the library.
 The demo sends a support-ticket state to Choice, Noul, Score and probability

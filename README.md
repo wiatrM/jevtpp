@@ -24,7 +24,7 @@ adapter runs inference inside your process with ONNX Runtime.
 - **Observable runtime:** latency percentiles, JSON/Prometheus metrics and an optional loopback dashboard.
 - **Small core:** no Python runtime, JSON library or ONNX dependency unless you enable the adapter.
 
-[Quick start](#build-and-test) · [System One API](docs/SYSTEM_ONE.md) ·
+[Documentation](https://wiatrm.github.io/jevtpp/) · [Quick start](#build-and-test) · [System One API](docs/SYSTEM_ONE.md) ·
 [Laya setup](docs/LAYA.md) · [Performance](docs/PERFORMANCE.md) ·
 [Runnable demo](examples/laya_routing_demo.cpp)
 
@@ -136,6 +136,10 @@ you want local inference with application-owned types. The library currently
 has no GPU execution-provider selection and no built-in hosted Jev client.
 Using C++ alone does not make the same ONNX model faster than Python: the
 native inference engine does most of the work in both cases.
+
+Service integration is synchronous today. `choose_async()` is a `std::async`
+convenience, not a bounded scheduler or coroutine API. There is no shipped Asio
+adapter or cancellation API. See [concurrency and service integration](https://wiatrm.github.io/jevtpp/concurrency/).
 
 ## Performance
 

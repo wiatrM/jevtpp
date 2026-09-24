@@ -2,6 +2,7 @@
 
 #include "jevt/diagnostics.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -98,7 +99,9 @@ void send_response(Socket socket, int status, std::string_view status_text,
        << "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; "
           "script-src 'unsafe-inline'; connect-src 'self'\r\n"
        << "Referrer-Policy: no-referrer\r\n"
-       << "Connection: close\r\n\r\n";
+       << "Connection: close\r\n";
+  if (status == 405) head << "Allow: GET\r\n";
+  head << "\r\n";
   const auto header = head.str();
   if (send_all(socket, header)) send_all(socket, body);
 }
@@ -169,6 +172,16 @@ struct HttpServer::Impl {
 #endif
       close_socket(socket);
     }
+    {
+      std::lock_guard client_lock(client_mutex);
+      if (active_client != kInvalidSocket) {
+#ifdef _WIN32
+        ::shutdown(active_client, SD_BOTH);
+#else
+        ::shutdown(active_client, SHUT_RDWR);
+#endif
+      }
+    }
     if (worker.joinable()) worker.join();
     bound_port.store(0);
   }
@@ -182,8 +195,32 @@ struct HttpServer::Impl {
         if (!is_running.load()) break;
         continue;
       }
+      {
+        std::lock_guard client_lock(client_mutex);
+        if (!is_running.load()) {
+          close_socket(client);
+          break;
+        }
+        active_client = client;
+      }
+      // Bound idle reads and writes as well as explicitly interrupting them
+      // during stop(). A stalled peer must not monopolize the accept thread.
+#ifdef _WIN32
+      const DWORD timeout_ms = 2000;
+      const auto* timeout = reinterpret_cast<const char*>(&timeout_ms);
+      ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, timeout, sizeof(timeout_ms));
+      ::setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, timeout, sizeof(timeout_ms));
+#else
+      const timeval timeout{2, 0};
+      ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+      ::setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
       handle(client);
-      close_socket(client);
+      {
+        std::lock_guard client_lock(client_mutex);
+        active_client = kInvalidSocket;
+        close_socket(client);
+      }
     }
   }
 
@@ -194,13 +231,21 @@ struct HttpServer::Impl {
       char buffer[1024];
       while (request.find("\r\n\r\n") == std::string::npos &&
              request.size() < options.max_request_bytes) {
+        const auto remaining = std::min(sizeof(buffer), options.max_request_bytes - request.size());
 #ifdef _WIN32
-        const int read = ::recv(client, buffer, sizeof(buffer), 0);
+        const int read = ::recv(client, buffer, static_cast<int>(remaining), 0);
 #else
-        const auto read = ::recv(client, buffer, sizeof(buffer), 0);
+        const auto read = ::recv(client, buffer, remaining, 0);
 #endif
         if (read <= 0) break;
         request.append(buffer, static_cast<std::size_t>(read));
+      }
+      if (request.find("\r\n\r\n") == std::string::npos) {
+        if (request.size() == options.max_request_bytes)
+          send_response(client, 431, "Request Header Fields Too Large", "text/plain; charset=utf-8", "headers too large\n");
+        else
+          send_response(client, 400, "Bad Request", "text/plain; charset=utf-8", "incomplete headers\n");
+        return;
       }
       const auto line_end = request.find("\r\n");
       const std::string_view line(request.data(),
@@ -209,9 +254,14 @@ struct HttpServer::Impl {
       const auto second_space = first_space == std::string_view::npos
                                     ? std::string_view::npos
                                     : line.find(' ', first_space + 1);
-      if (first_space == std::string_view::npos || second_space == std::string_view::npos ||
-          line.substr(0, first_space) != "GET") {
+      if (first_space == std::string_view::npos || first_space == 0 ||
+          second_space == std::string_view::npos || second_space == first_space + 1 ||
+          (line.substr(second_space + 1) != "HTTP/1.1" && line.substr(second_space + 1) != "HTTP/1.0")) {
         send_response(client, 400, "Bad Request", "text/plain; charset=utf-8", "bad request\n");
+        return;
+      }
+      if (line.substr(0, first_space) != "GET") {
+        send_response(client, 405, "Method Not Allowed", "text/plain; charset=utf-8", "method not allowed\n");
         return;
       }
       auto path = line.substr(first_space + 1, second_space - first_space - 1);
@@ -242,6 +292,8 @@ struct HttpServer::Impl {
   std::atomic<std::uint16_t> bound_port{0};
   std::thread worker;
   std::mutex lifecycle_mutex;
+  std::mutex client_mutex;
+  Socket active_client = kInvalidSocket;
 };
 
 HttpServer::HttpServer(Diagnostics& diagnostics) : impl_(new Impl(diagnostics)) {}

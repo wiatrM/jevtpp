@@ -54,7 +54,7 @@ public:
         }
         const auto best = static_cast<std::size_t>(std::distance(scores.begin(), std::max_element(scores.begin(), scores.end())));
         const auto total = std::accumulate(scores.begin(), scores.end(), 0.0F);
-        if (total <= 0.0F) { record(CallOutcome::error); return error{error_code::invalid_backend_output, "backend returned only zero scores"}; }
+        if (!(total > 0.0F) || !std::isfinite(total)) { record(CallOutcome::error); return error{error_code::invalid_backend_output, "backend returned an invalid score total"}; }
         for (auto& score : scores) score /= total;
         const float confidence = scores[best];
         const auto values = Schema::values();
@@ -96,6 +96,11 @@ public:
         auto response = backend_->predict(request);
         if (!response) { record(CallOutcome::error); return response.error_value(); }
         if (response->scores.size() != 2) { record(CallOutcome::error); return error{error_code::invalid_backend_output, "predicate backend must return two scores"}; }
+        if (std::any_of(response->scores.begin(), response->scores.end(),
+                        [](float value) { return !std::isfinite(value) || value < 0.0F; })) {
+            record(CallOutcome::error);
+            return error{error_code::invalid_backend_output, "predicate backend returned a negative or non-finite score"};
+        }
         const float total = response->scores[0] + response->scores[1];
         if (!(total > 0.0F) || !std::isfinite(total)) { record(CallOutcome::error); return error{error_code::invalid_backend_output, "invalid predicate scores"}; }
         const float false_score = response->scores[0] / total;
@@ -122,14 +127,14 @@ public:
     [[nodiscard]] bound_decision<Schema> bind(Schema schema, bind_options options = {}) const {
         auto selected_backend = options.backend_override ? std::move(options.backend_override) : backend_;
         if (!selected_backend) throw std::invalid_argument("jevt context has no backend");
-        const float threshold = options.abstain_threshold >= 0.0F ? options.abstain_threshold : threshold_;
+        const float threshold = resolve_threshold(options.abstain_threshold);
         return {std::move(schema), std::move(selected_backend), threshold, std::move(options.question), diagnostics_};
     }
     template <fixed_string Id>
     [[nodiscard]] bound_predicate<Id> bind(predicate_definition<Id> definition, bind_options options = {}) const {
         auto selected_backend = options.backend_override ? std::move(options.backend_override) : backend_;
         if (!selected_backend) throw std::invalid_argument("jevt context has no backend");
-        const float threshold = options.abstain_threshold >= 0.0F ? options.abstain_threshold : threshold_;
+        const float threshold = resolve_threshold(options.abstain_threshold);
         return {definition, std::move(selected_backend), threshold, diagnostics_};
     }
     template <class Model>
@@ -138,6 +143,12 @@ public:
         return {std::move(model), backend_, diagnostics_};
     }
 private:
+    [[nodiscard]] float resolve_threshold(float value) const {
+        if (value == -1.0F) return threshold_;
+        if (!std::isfinite(value) || value < 0.0F || value > 1.0F)
+            throw std::invalid_argument("binding threshold must be -1 (inherit) or between 0 and 1");
+        return value;
+    }
     std::shared_ptr<backend> backend_;
     float threshold_;
     std::shared_ptr<Diagnostics> diagnostics_;

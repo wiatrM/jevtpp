@@ -173,10 +173,32 @@ struct laya_backend::impl {
         for (std::size_t i = 0; i < session->GetOutputCount(); ++i)
             outputs.emplace_back(session->GetOutputNameAllocated(i, allocator).get());
         for (const auto required : {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"})
-            if (std::find(inputs.begin(), inputs.end(), required) == inputs.end())
+        {
+            const auto found = std::find(inputs.begin(), inputs.end(), required);
+            if (found == inputs.end())
                 throw std::runtime_error(std::string{"Laya graph is missing input: "} + required);
-        if (std::find(outputs.begin(), outputs.end(), "logits") == outputs.end())
+            const bool mask = std::string_view{required} == "marker_mask";
+            const std::size_t rank = std::string_view{required} == "qtype" ? 1 : 2;
+            const auto type = session->GetInputTypeInfo(static_cast<std::size_t>(found - inputs.begin()));
+            if (type.GetONNXType() != ONNX_TYPE_TENSOR)
+                throw std::runtime_error(std::string{"Laya input "} + required + " must be a tensor");
+            const auto tensor = type.GetTensorTypeAndShapeInfo();
+            if (tensor.GetElementType() != (mask ? ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL
+                                               : ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) ||
+                tensor.GetDimensionsCount() != rank)
+                throw std::runtime_error(std::string{"Laya input "} + required + " must be " +
+                    (mask ? "BOOL" : "INT64") + " rank " + std::to_string(rank));
+        }
+        const auto logits = std::find(outputs.begin(), outputs.end(), "logits");
+        if (logits == outputs.end())
             throw std::runtime_error("Laya graph is missing logits output");
+        const auto type = session->GetOutputTypeInfo(static_cast<std::size_t>(logits - outputs.begin()));
+        if (type.GetONNXType() != ONNX_TYPE_TENSOR)
+            throw std::runtime_error("Laya logits output must be a tensor");
+        const auto tensor = type.GetTensorTypeAndShapeInfo();
+        if (tensor.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+            tensor.GetDimensionsCount() != 2)
+            throw std::runtime_error("Laya logits output must be FLOAT rank 2 [batch, marker_width]");
     }
 
     std::vector<std::int64_t> encode(std::string text) {
@@ -316,15 +338,25 @@ struct laya_backend::impl {
             constexpr std::array output_names{"logits"};
             auto outputs = session->Run(Ort::RunOptions{nullptr}, input_names.data(), tensors.data(), tensors.size(),
                                         output_names.data(), output_names.size());
+            if (outputs.size() != 1 || !outputs[0].IsTensor())
+                return error{error_code::invalid_backend_output, "Laya logits output must be a tensor"};
             const auto info = outputs[0].GetTensorTypeAndShapeInfo();
             if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
-                info.GetElementCount() < batch * marker_width)
-                return error{error_code::invalid_backend_output, "Laya logits tensor has an unexpected shape or type"};
+                info.GetShape() != std::vector<std::int64_t>{marker_shape.begin(), marker_shape.end()})
+                return error{error_code::invalid_backend_output,
+                    "Laya logits must be FLOAT with exact shape [" + std::to_string(batch) + ", " +
+                    std::to_string(marker_width) + "] (batch, marker_width)"};
             const auto* logits = outputs[0].GetTensorData<float>();
             std::vector<inference_response> responses;
             responses.reserve(batch);
             for (std::size_t row = 0; row < batch; ++row) {
                 const auto& current = items[row];
+                // Only active options are probabilities; padded markers may carry -infinity.
+                for (std::size_t column = 0; column < current.options.size(); ++column)
+                    if (!std::isfinite(logits[row * marker_width + column]))
+                        return error{error_code::invalid_backend_output,
+                            "Laya logits contain a non-finite value at active option [" +
+                            std::to_string(row) + ", " + std::to_string(column) + "]"};
                 auto probabilities = softmax(
                     {logits + row * marker_width, current.options.size()}, current.temperature);
                 responses.push_back(inference_response{std::move(probabilities), options.model_id});

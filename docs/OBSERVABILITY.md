@@ -19,7 +19,10 @@ optional bounded tag. `snapshot()` returns:
 - histogram buckets and the number of dropped decision IDs.
 
 Percentiles are estimates from bounded aggregation and should report their
-unit and sample count. Empty windows use zero-valued latency statistics. Call
+unit and sample count. The nearest-rank bucket (`ceil(q * calls)`) supplies its
+upper bound; overflow uses the maximum observed latency for that aggregate
+since construction or `reset()`, not its mean. These conservative estimates
+are not exact sample percentiles. Empty windows use zero-valued latency statistics. Call
 counts are exact where practical; snapshots taken while
 calls are active are internally consistent but naturally become historical
 immediately after capture.
@@ -38,32 +41,33 @@ When `JEVT_ENABLE_HTTP=ON`, the optional service presents the same snapshot:
 | `GET /metrics` | Prometheus text | Monitoring-system scrape |
 | `GET /` | `text/html` | Read-only operational dashboard |
 
-The HTML view should render totals, outcome/error mix and p50/p95/p99 charts
-from the JSON endpoint. Assets should be embedded so the dashboard has no CDN
+The HTML view renders totals, outcome/error mix and latency charts
+from the JSON endpoint. Assets are embedded so the dashboard has no CDN
 or internet dependency. Unknown methods return 405; unknown paths return 404.
+Incomplete or malformed headers return 400; headers that exhaust the configured
+byte limit without a terminator return 431.
 Responses should set `Content-Type`, `X-Content-Type-Options: nosniff`, a
 restrictive content security policy, and `Cache-Control: no-store`.
 
 The same representations are available without HTTP through `to_json()` and
-`to_prometheus()`. A representative JSON payload is:
+`to_prometheus()`. The JSON uses `generated_at_unix_ms`, a `total` counter object,
+`decisions` entries shaped as `{decision, stats}`, `recent_calls` and
+`dropped_decisions`. Each counter object has the following shape (illustrated
+with custom histogram bounds of 1 and 10 ms):
 
 ```json
 {
-  "schema_version": 1,
-  "generated_at": "2026-09-24T12:00:00Z",
-  "decisions": [
-    {
-      "id": "support.routing",
-      "calls": 1200,
-      "successes": 1140,
-      "abstains": 45,
-      "errors": 15,
-      "latency_mean_ms": 0.96,
-      "latency_p50_ms": 0.82,
-      "latency_p95_ms": 2.4,
-      "latency_p99_ms": 5.1
-    }
-  ]
+  "calls": 1,
+  "successes": 1,
+  "errors": 0,
+  "abstains": 0,
+  "latency_ms": {
+    "mean": 0.25,
+    "p50": 1,
+    "p95": 1,
+    "p99": 1,
+    "histogram": {"bounds": [1, 10], "counts": [1, 0, 0]}
+  }
 }
 ```
 
@@ -82,7 +86,10 @@ export snapshots into the application's existing telemetry stack. Apply
 network policy and request limits there.
 
 Dashboard failure must not fail inference. Server shutdown is bounded and
-joins its worker thread. Snapshot generation is bounded by the number of
+joins its worker thread after interrupting the active client socket. Reads and
+writes have a two-second idle timeout. This is a single-client-at-a-time utility,
+not a production HTTP server or total-request-deadline implementation.
+Snapshot generation is bounded by the number of
 registered schemas and fixed outcome/error dimensions.
 
 ## Advanced analysis without sensitive payloads

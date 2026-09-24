@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <memory>
+#include <limits>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -188,6 +189,50 @@ JEVT_TEST("runtime decisions feed success, abstention, errors and tags into diag
     JEVT_REQUIRE_EQ(snapshot.recent_calls.size(), 3u);
     JEVT_REQUIRE(snapshot.recent_calls.front().tag.has_value());
     JEVT_REQUIRE_EQ(*snapshot.recent_calls.front().tag, "ticket-error");
+}
+
+JEVT_TEST("invalid predicate scores and overflowing choice totals are errors") {
+    const auto maximum = std::numeric_limits<float>::max();
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    const auto infinity = std::numeric_limits<float>::infinity();
+    for (const auto& scores : std::vector<std::vector<float>>{
+             {-1.0F, 2.0F}, {2.0F, -1.0F}, {nan, 1.0F}, {infinity, 1.0F},
+             {0.0F, 0.0F}, {maximum, maximum}}) {
+        auto backend = std::make_shared<jevt::function_backend>(
+            [scores](const jevt::inference_request&) -> jevt::result<jevt::inference_response> {
+                return jevt::inference_response{scores, "invalid-scores"};
+            });
+        const jevt::context runtime{{.inference_backend = backend}};
+        const auto answer = runtime.bind(needs_human).evaluate("ticket");
+        JEVT_REQUIRE(!answer);
+        JEVT_REQUIRE_EQ(answer.error_value().code, jevt::error_code::invalid_backend_output);
+        JEVT_REQUIRE_EQ(runtime.diagnostics()->snapshot().total.errors, 1u);
+    }
+    auto backend = std::make_shared<jevt::function_backend>(
+        [maximum](const jevt::inference_request&) -> jevt::result<jevt::inference_response> {
+            return jevt::inference_response{{maximum, maximum, maximum}, "overflow"};
+        });
+    const jevt::context runtime{{.inference_backend = backend}};
+    const auto answer = runtime.bind(support_routing).choose("ticket");
+    JEVT_REQUIRE(!answer);
+    JEVT_REQUIRE_EQ(answer.error_value().code, jevt::error_code::invalid_backend_output);
+}
+
+JEVT_TEST("binding thresholds reject invalid overrides for choices and predicates") {
+    const jevt::context runtime{{.inference_backend = routing_backend(), .abstain_threshold = 0.6F}};
+    for (float threshold : {-2.0F, -0.1F, 1.1F, std::numeric_limits<float>::infinity(),
+                            std::numeric_limits<float>::quiet_NaN()}) {
+        bool choice_rejected = false, predicate_rejected = false;
+        try { (void)runtime.bind(support_routing, {.abstain_threshold = threshold}); }
+        catch (const std::invalid_argument&) { choice_rejected = true; }
+        try { (void)runtime.bind(needs_human, {.abstain_threshold = threshold}); }
+        catch (const std::invalid_argument&) { predicate_rejected = true; }
+        JEVT_REQUIRE(choice_rejected && predicate_rejected);
+    }
+    for (float threshold : {-1.0F, 0.0F, 1.0F}) {
+        (void)runtime.bind(support_routing, {.abstain_threshold = threshold});
+        (void)runtime.bind(needs_human, {.abstain_threshold = threshold});
+    }
 }
 
 int main() {

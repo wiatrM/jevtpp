@@ -1,0 +1,43 @@
+name: Laya integration
+on:
+  push:
+    paths: ['src/**', 'include/**', 'tests/**', 'scripts/fetch_laya.py', 'CMakeLists.txt', 'cmake/**', '.github/workflows/laya.yml']
+  pull_request:
+    paths: ['src/**', 'include/**', 'tests/**', 'scripts/fetch_laya.py', 'CMakeLists.txt', 'cmake/**', '.github/workflows/laya.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  model-and-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install fixture generator dependency
+        run: python -m pip install onnx==1.23.0
+      - name: Download pinned ONNX Runtime SDK
+        run: |
+          curl --fail --location --retry 3 -o "$RUNNER_TEMP/ort.tgz" https://github.com/microsoft/onnxruntime/releases/download/v1.29.1/onnxruntime-linux-x64-1.29.1.tgz
+          printf 'a28d7d65acafc06fb0f416cb409998773f5314c7eebf77caf907812831cdfc67  %s\n' "$RUNNER_TEMP/ort.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP"
+      - uses: actions/cache@v4
+        with:
+          path: models/laya-multilingual
+          key: laya-${{ hashFiles('scripts/fetch_laya.py') }}
+      - name: Download or verify pinned model
+        run: python scripts/fetch_laya.py models/laya-multilingual
+      - name: Configure native backend
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DJEVT_ENABLE_LAYA=ON
+          -DONNXRUNTIME_ROOT="$RUNNER_TEMP/onnxruntime-linux-x64-1.29.1"
+          -DJEVT_LAYA_MODEL_DIR="$GITHUB_WORKSPACE/models/laya-multilingual"
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+      - name: Reject malformed ONNX contracts
+        run: |
+          python tests/laya_contract_fixtures.py "$RUNNER_TEMP/contracts"
+          build/tests/jevt_laya_integration_tests models/laya-multilingual "$RUNNER_TEMP/contracts"

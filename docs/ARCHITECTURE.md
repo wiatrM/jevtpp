@@ -49,8 +49,9 @@ result from one schema cannot be passed to a matcher for another schema.
 
 `init()` constructs a shared application context. The context owns the backend,
 default abstention threshold and diagnostics registry. A backend adapter can
-in turn own expensive model resources. The returned RAII handle must outlive
-decisions made through the default context.
+in turn own expensive model resources. The returned RAII handle must remain
+alive while creating bindings through the default context. Existing bindings
+own shared backend/diagnostics references and can outlive that handle.
 
 `bind(schema, options)` resolves the backend and abstention threshold and
 returns a typed decision handle. It rejects a missing backend before the hot
@@ -141,6 +142,12 @@ Bound decisions are cheap handles to shared backend state. Calls may run
 concurrently when the supplied backend supports concurrent `predict()` calls.
 Backend-specific session pooling belongs behind the backend boundary.
 Snapshotting diagnostics is thread-safe and bounded in time.
+
+`choose_async()` uses `std::async(std::launch::async)` and an owned input
+string. It is not a coroutine, bounded executor, cancellation API or Asio
+integration. A future may block on destruction. Services should place the
+synchronous API behind their own bounded inference executor, off the I/O loop.
+See the [concurrency guide](https://wiatrm.github.io/jevtpp/concurrency/).
 
 Stop the optional HTTP server before releasing its diagnostics registry.
 Destructors do not throw.

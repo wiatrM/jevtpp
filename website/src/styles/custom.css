@@ -1,0 +1,13 @@
+:root {
+  --sl-color-accent-low: #172554;
+  --sl-color-accent: #60a5fa;
+  --sl-color-accent-high: #dbeafe;
+  --sl-content-width: 52rem;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #dbeafe;
+  --sl-color-accent: #1d4ed8;
+  --sl-color-accent-high: #172554;
+}
+.site-title img { height: 2.6rem; border-radius: .35rem; }
+.sl-markdown-content table { font-size: .95rem; }

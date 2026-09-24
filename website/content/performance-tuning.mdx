@@ -1,0 +1,42 @@
+---
+title: Ten performance priorities
+description: Evidence-backed priorities for latency and throughput, with shipped and proposed work separated.
+---
+
+There is room to improve. The four-field CPU result around 565 ms is not an
+architectural lower bound: the separate RTX 4090 experiment measured 14.1 ms.
+It does not follow that changing language or adding `co_await` produces that
+gain. Read the [measurement conditions and raw data](performance) first.
+
+| Priority | Change | Expected benefit and status |
+|---|---|---|
+| 1 | Add a CUDA execution provider | Largest measured opportunity on this machine. Python/CUDA achieved 14.1 ms for four fields; C++ support is not implemented. Verify provider, output parity and quality before shipping. |
+| 2 | Load once, warm representative shapes | Already possible. Construction took roughly 3 seconds in the CPU probe. Keep sessions and bindings alive; avoid per-request initialization. Warmup does not eliminate the measured 565 ms CPU cost. |
+| 3 | Send focused state and ask only needed questions | Already possible at the application boundary. Each question encodes another copy of the context. Measure quality before trimming state or removing fields. |
+| 4 | Tune ORT threads together with request concurrency | Intra/inter-op settings already exposed. Default threads beat 1/2/4 in our serial CPU sweep; a loaded service may have a different optimum. |
+| 5 | Introduce bounded execution and backpressure | Application-managed today. Replace unconstrained per-call async launches in service code with a bounded pool/queue. This protects tail latency, not single-call model compute. |
+| 6 | Evaluate microbatching and length buckets | Current System One batches fields within one request, not requests across clients. Cross-request batching is proposed; measure throughput against queue-delay and p95 costs. |
+| 7 | Cache invariant question/option tokenization | Not implemented. Schema text is often repeated. Cache keys need model/tokenizer identity, schema metadata and truncation settings. CPU preprocessing was only about 1 ms, so this is not the main CPU fix. |
+| 8 | Reuse buffers and investigate GPU I/O binding | Not implemented. Profile allocations/transfers first; buffers must remain isolated across concurrent calls. Do not introduce shared mutable scratch storage without ownership tests. |
+| 9 | Evaluate reduced precision or quantization | Not enabled by the current adapter. Compare latency, memory, probability drift, accuracy, calibration and abstention on held-out data. A smaller/faster model is a separate quality trade-off. |
+| 10 | Measure and reduce diagnostics contention | Registry uses a mutex; snapshots and recent-call retention have costs. Benchmark under concurrent writes/scrapes before sharding or sampling. Tune histogram bounds and bounded retention to the workload. |
+
+## What to measure for each change
+
+Record model hash, runtime/provider versions, hardware, input length, field
+count, concurrency, warmup, sample count and timing boundaries. Report p50,
+p95 and p99 with errors and queue rejections, not successful calls alone.
+Include cold start and memory separately. Compare identical inputs and a
+labeled quality set; probability parity on a single fixture is not enough.
+
+For a service, distinguish **queue delay**, **tokenization**, **model execution**
+and **end-to-end response latency**. Increase concurrency until the queue or
+latency budget fails. Do not infer throughput simply from reciprocal p50.
+
+## Safe caching
+
+Result caching can help repetitive workloads, but requires explicit semantics:
+include the complete relevant state, schema, model revision and policy in the
+cache key, bound retention, and protect sensitive context. Do not silently
+cache decisions for state that changes independently, such as account balances
+or incident status. This library currently provides no result cache.

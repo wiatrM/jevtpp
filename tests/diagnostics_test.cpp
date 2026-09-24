@@ -105,6 +105,41 @@ JEVT_TEST("diagnostics reset creates a clean measurement window") {
     JEVT_REQUIRE(snapshot.recent_calls.empty());
 }
 
+JEVT_TEST("overflow percentiles use the observed maximum and reset with the window") {
+    jevt::Diagnostics diagnostics;
+    const auto record_window = [&](auto ordinary, auto tail) {
+        for (int i = 0; i < 90; ++i)
+            diagnostics.record_call("tail", jevt::CallOutcome::success, ordinary);
+        for (int i = 0; i < 10; ++i)
+            diagnostics.record_call("tail", jevt::CallOutcome::success, tail);
+    };
+    const auto check = [](const jevt::CounterSnapshot& stats, double tail) {
+        JEVT_REQUIRE_EQ(stats.calls, 100u);
+        JEVT_REQUIRE_EQ(stats.latency_p50_ms, 1000.0);
+        JEVT_REQUIRE_EQ(stats.latency_p95_ms, tail);
+        JEVT_REQUIRE_EQ(stats.latency_p99_ms, tail);
+        JEVT_REQUIRE(stats.latency_p50_ms <= stats.latency_p95_ms);
+        JEVT_REQUIRE(stats.latency_p95_ms <= stats.latency_p99_ms);
+    };
+    record_window(900ms, 2000ms);
+    auto snapshot = diagnostics.snapshot();
+    check(snapshot.total, 2000.0);
+    check(decision_named(snapshot, "tail").stats, 2000.0);
+
+    diagnostics.reset();
+    snapshot = diagnostics.snapshot();
+    JEVT_REQUIRE_EQ(snapshot.total.latency_p50_ms, 0.0);
+    JEVT_REQUIRE_EQ(snapshot.total.latency_p95_ms, 0.0);
+    JEVT_REQUIRE_EQ(snapshot.total.latency_p99_ms, 0.0);
+
+    // A mean fallback would report 569 ms for p95, below the p50 bucket's
+    // 1000 ms bound. The previous window's maximum must also be forgotten.
+    record_window(510ms, 1100ms);
+    snapshot = diagnostics.snapshot();
+    check(snapshot.total, 1100.0);
+    check(decision_named(snapshot, "tail").stats, 1100.0);
+}
+
 int main() {
     return jevt::test::run_all("diagnostics");
 }
