@@ -17,7 +17,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: lukka/get-cmake@latest
 
@@ -41,7 +41,7 @@ jobs:
   benchmark-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: lukka/get-cmake@latest
       - name: Configure benchmarks
         run: >-
