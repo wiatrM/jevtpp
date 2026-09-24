@@ -18,11 +18,16 @@ double elapsed(clock_type::time_point start) {
     return std::chrono::duration<double, std::milli>(clock_type::now() - start).count();
 }
 int main(int argc, char** argv) try {
-    if (argc != 5) throw std::runtime_error("usage: laya_latency MODEL THREADS FIELDS ITERATIONS (FIELDS=1 or 4)");
+    if (argc != 5 && argc != 7) throw std::runtime_error("usage: laya_latency MODEL THREADS FIELDS ITERATIONS [cpu|cuda IO_BINDING(0|1)]");
     int threads = std::stoi(argv[2]), fields = std::stoi(argv[3]), iterations = std::stoi(argv[4]);
     if ((fields != 1 && fields != 4) || iterations < 1 || threads < 0) throw std::runtime_error("invalid arguments");
     const auto load_start = clock_type::now();
-    jevt::laya_backend backend({.model_directory = argv[1], .intra_op_threads = threads});
+    const std::string provider = argc == 7 ? argv[5] : "cpu";
+    if (provider != "cpu" && provider != "cuda") throw std::runtime_error("unknown provider");
+    const bool binding = argc == 7 && std::stoi(argv[6]) == 1;
+    jevt::laya_backend backend({.model_directory = argv[1], .intra_op_threads = threads,
+        .provider = provider == "cuda" ? jevt::laya_provider::cuda : jevt::laya_provider::cpu,
+        .use_io_binding = binding});
     const double load_ms = elapsed(load_start);
     const std::string context = R"json({
   "ticket": {
@@ -64,7 +69,8 @@ int main(int argc, char** argv) try {
     const auto samples = times;
     std::sort(times.begin(), times.end());
     const auto percentile = [&](double q) { return times[static_cast<std::size_t>(std::ceil(q * times.size())) - 1]; };
-    std::cout << std::setprecision(9) << "{\"language\":\"cpp\",\"threads\":" << threads
+    std::cout << std::setprecision(9) << "{\"language\":\"cpp\",\"provider\":\"" << provider
+        << "\",\"io_binding\":" << (binding ? "true" : "false") << ",\"threads\":" << threads
         << ",\"fields\":" << fields << ",\"iterations\":" << iterations
         << ",\"warmup\":5,\"load_ms\":" << load_ms << ",\"first_ms\":" << first_ms
         << ",\"p50_ms\":" << percentile(.5) << ",\"p95_ms\":" << percentile(.95) << ",\"probabilities\":[";

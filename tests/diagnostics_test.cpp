@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
@@ -103,6 +104,101 @@ JEVT_TEST("diagnostics reset creates a clean measurement window") {
     JEVT_REQUIRE_EQ(snapshot.total.calls, 0u);
     JEVT_REQUIRE(snapshot.decisions.empty());
     JEVT_REQUIRE(snapshot.recent_calls.empty());
+}
+
+JEVT_TEST("recent trace sampling preserves exact metrics and restarts on reset") {
+    jevt::DiagnosticsOptions options;
+    options.recent_capacity = 2;
+    options.recent_sample_every = 3;
+    options.max_decisions = 1;
+    options.max_tag_length = 4;
+    jevt::Diagnostics diagnostics(options);
+    for (int i = 0; i < 8; ++i) {
+        diagnostics.record_call(i % 2 ? "dropped" : "retained",
+                                i % 2 ? jevt::CallOutcome::error : jevt::CallOutcome::success,
+                                1ms, "long-opaque-tag");
+    }
+    auto snapshot = diagnostics.snapshot();
+    JEVT_REQUIRE_EQ(snapshot.total.calls, 8u);
+    JEVT_REQUIRE_EQ(snapshot.total.successes, 4u);
+    JEVT_REQUIRE_EQ(snapshot.total.errors, 4u);
+    JEVT_REQUIRE_EQ(snapshot.total.latency_mean_ms, 1.0);
+    JEVT_REQUIRE_EQ(std::accumulate(snapshot.total.latency_histogram.counts.begin(),
+                                   snapshot.total.latency_histogram.counts.end(),
+                                   std::uint64_t{}), 8u);
+    JEVT_REQUIRE_EQ(snapshot.decisions.front().stats.calls, 4u);
+    JEVT_REQUIRE_EQ(snapshot.dropped_decisions, 4u);
+    JEVT_REQUIRE_EQ(snapshot.recent_calls.size(), 2u);
+    JEVT_REQUIRE_EQ(snapshot.recent_calls[0].sequence, 7u);
+    JEVT_REQUIRE_EQ(snapshot.recent_calls[1].sequence, 4u);
+    JEVT_REQUIRE_EQ(*snapshot.recent_calls[0].tag, "long");
+    diagnostics.reset();
+    diagnostics.record_call("new", jevt::CallOutcome::abstain, 2ms);
+    snapshot = diagnostics.snapshot();
+    JEVT_REQUIRE_EQ(snapshot.total.calls, 1u);
+    JEVT_REQUIRE_EQ(snapshot.total.abstains, 1u);
+    JEVT_REQUIRE_EQ(snapshot.total.latency_mean_ms, 2.0);
+    JEVT_REQUIRE_EQ(snapshot.dropped_decisions, 0u);
+    JEVT_REQUIRE_EQ(snapshot.recent_calls.size(), 1u);
+    JEVT_REQUIRE_EQ(snapshot.recent_calls.front().sequence, 1u);
+}
+
+JEVT_TEST("either retention knob can disable traces without disabling metrics") {
+    for (bool disable_capacity : {false, true}) {
+        jevt::DiagnosticsOptions options;
+        options.recent_capacity = disable_capacity ? 0 : 256;
+        options.recent_sample_every = disable_capacity ? 1 : 0;
+        jevt::Diagnostics diagnostics(options);
+        diagnostics.record_call("operation", jevt::CallOutcome::success, 1ms, "opaque");
+        const auto snapshot = diagnostics.snapshot();
+        JEVT_REQUIRE(snapshot.recent_calls.empty());
+        JEVT_REQUIRE_EQ(snapshot.total.calls, 1u);
+        JEVT_REQUIRE_EQ(snapshot.decisions.front().stats.calls, 1u);
+        JEVT_REQUIRE_EQ(std::accumulate(snapshot.total.latency_histogram.counts.begin(),
+                                       snapshot.total.latency_histogram.counts.end(),
+                                       std::uint64_t{}), 1u);
+    }
+}
+
+JEVT_TEST("sampled concurrent snapshots keep counters histograms and traces consistent") {
+    jevt::DiagnosticsOptions options;
+    options.recent_capacity = 32;
+    options.recent_sample_every = 7;
+    jevt::Diagnostics diagnostics(options);
+    std::atomic<bool> done{false};
+    std::atomic<bool> valid{true};
+    std::thread reader([&] {
+        while (!done.load()) {
+            const auto snapshot = diagnostics.snapshot();
+            const auto histogram_calls = std::accumulate(
+                snapshot.total.latency_histogram.counts.begin(),
+                snapshot.total.latency_histogram.counts.end(), std::uint64_t{});
+            std::uint64_t decision_calls = 0;
+            for (const auto& decision : snapshot.decisions) decision_calls += decision.stats.calls;
+            if (histogram_calls != snapshot.total.calls || decision_calls != snapshot.total.calls ||
+                snapshot.total.successes != snapshot.total.calls) valid.store(false);
+            auto previous = snapshot.total.calls + 1;
+            for (const auto& call : snapshot.recent_calls) {
+                if (call.sequence >= previous || (call.sequence - 1) % 7 != 0) valid.store(false);
+                previous = call.sequence;
+            }
+        }
+    });
+    std::vector<std::thread> workers;
+    for (int t = 0; t < 4; ++t) {
+        workers.emplace_back([&] {
+            for (int i = 0; i < 3000; ++i)
+                diagnostics.record_call("concurrent", jevt::CallOutcome::success, 1ms);
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    done.store(true);
+    reader.join();
+    JEVT_REQUIRE(valid.load());
+    const auto snapshot = diagnostics.snapshot();
+    JEVT_REQUIRE_EQ(snapshot.total.calls, 12000u);
+    JEVT_REQUIRE_EQ(snapshot.recent_calls.size(), 32u);
+    JEVT_REQUIRE_EQ(snapshot.recent_calls.front().sequence, 11999u);
 }
 
 JEVT_TEST("overflow percentiles use the observed maximum and reset with the window") {

@@ -145,7 +145,6 @@ struct Diagnostics::Impl {
   Counters total;
   std::map<std::string, Counters, std::less<>> decisions;
   std::deque<RecentCall> recent;
-  std::uint64_t next_sequence = 1;
   std::uint64_t dropped_decisions = 0;
 };
 
@@ -171,6 +170,11 @@ void Diagnostics::record_call(std::string_view decision, CallOutcome outcome,
   if (!impl_) return;
   const double latency_ms =
       std::max(0.0, std::chrono::duration<double, std::milli>(latency).count());
+  // Options are immutable. Classify once, before contending for the lock,
+  // and reuse the bucket for the total and per-decision histograms.
+  const auto& bounds = impl_->options.histogram_bounds_ms;
+  const auto bucket = static_cast<std::size_t>(
+      std::lower_bound(bounds.begin(), bounds.end(), latency_ms) - bounds.begin());
   std::lock_guard lock(impl_->mutex);
 
   auto update = [&](Counters& counters) {
@@ -180,11 +184,7 @@ void Diagnostics::record_call(std::string_view decision, CallOutcome outcome,
     if (outcome == CallOutcome::abstain) ++counters.abstains;
     counters.latency_sum_ms += latency_ms;
     counters.latency_max_ms = std::max(counters.latency_max_ms, latency_ms);
-    const auto bucket = std::lower_bound(impl_->options.histogram_bounds_ms.begin(),
-                                         impl_->options.histogram_bounds_ms.end(),
-                                         latency_ms);
-    ++counters.buckets[static_cast<std::size_t>(
-        bucket - impl_->options.histogram_bounds_ms.begin())];
+    ++counters.buckets[bucket];
   };
   update(impl_->total);
 
@@ -200,9 +200,11 @@ void Diagnostics::record_call(std::string_view decision, CallOutcome outcome,
   }
   if (found != impl_->decisions.end()) update(found->second);
 
-  if (impl_->options.recent_capacity != 0) {
+  if (impl_->options.recent_capacity != 0 &&
+      impl_->options.recent_sample_every != 0 &&
+      (impl_->total.calls - 1) % impl_->options.recent_sample_every == 0) {
     RecentCall call;
-    call.sequence = impl_->next_sequence++;
+    call.sequence = impl_->total.calls;
     call.unix_time_ms = now_ms();
     call.decision = std::string(decision);
     call.outcome = outcome;
@@ -290,7 +292,6 @@ void Diagnostics::reset() {
   impl_->total.buckets.resize(impl_->options.histogram_bounds_ms.size() + 1);
   impl_->decisions.clear();
   impl_->recent.clear();
-  impl_->next_sequence = 1;
   impl_->dropped_decisions = 0;
 }
 

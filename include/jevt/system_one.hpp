@@ -313,6 +313,20 @@ private:
 
 template <class Model> class bound_system_one;
 
+// Compile-time projection keeps a typed result without computing discarded
+// fields. Context projection remains explicit in the caller's serializer.
+template <fixed_string... Names, fixed_string Id, class... Fields>
+[[nodiscard]] constexpr auto select_fields(const decision_model_definition<Id, Fields...>& model) {
+    static_assert(sizeof...(Names) > 0, "select_fields requires at least one field");
+    static_assert(((system_one_detail::field_index<Names, Fields...>() < sizeof...(Fields)) && ...),
+                  "unknown decision field name");
+    using tuple = std::tuple<Fields...>;
+    using selected = decision_model_definition<Id,
+        std::tuple_element_t<system_one_detail::field_index<Names, Fields...>(), tuple>...>;
+    return selected{model.description,
+        std::tuple{std::get<system_one_detail::field_index<Names, Fields...>()>(model.fields)...}};
+}
+
 template <fixed_string Id, class... Fields>
 class bound_system_one<decision_model_definition<Id, Fields...>> {
 public:
@@ -326,6 +340,11 @@ public:
     }
     [[nodiscard]] system_one_request request(state_value state) const {
         return make_system_one_request(model_, std::move(state));
+    }
+    template <fixed_string... Names>
+    [[nodiscard]] auto select() const {
+        auto projected = select_fields<Names...>(model_);
+        return bound_system_one<decltype(projected)>{std::move(projected), backend_, diagnostics_};
     }
     [[nodiscard]] result<answer_type> evaluate(state_value state) const {
         const auto started = std::chrono::steady_clock::now();

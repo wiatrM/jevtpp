@@ -125,20 +125,21 @@ abstention and exhaustive typed dispatch handling.
 
 | Project | Execution | What it offers |
 |---|---|---|
-| **JevT++** | In-process C++20; current Laya adapter uses ONNX Runtime CPU | Compile-time enum schemas, typed field access, abstention and application diagnostics |
+| **JevT++** | In-process C++20; ONNX Runtime CPU or explicit CUDA | Compile-time enum schemas, typed field access, bounded batching, abstention and diagnostics |
 | [Laya Python](https://github.com/NandhaKishorM/laya) | Local model runtime with CPU/GPU paths | Upstream model tooling and Python integration |
 | [Receptron Laya](https://github.com/receptron/laya) | Node.js/TypeScript + ONNX Runtime | Typed System One calls in JavaScript applications |
 | [laya.cpp](https://github.com/lkarlslund/laya.cpp) | Native C++ with ggml, CUDA/Vulkan/Core ML | Hardware-specific inference, CLI and Jev-compatible serving |
 | [TypeSafe Jev](https://docs.typesafe.ai/introduction) | Hosted proprietary model | Managed inference through a typed decision API |
 
 Choose JevT++ when decisions belong inside an existing C++ application and
-you want local inference with application-owned types. The library currently
-has no GPU execution-provider selection and no built-in hosted Jev client.
+you want local inference with application-owned types. Current `main` supports
+CPU/CUDA selection; there is no built-in hosted Jev client.
 Using C++ alone does not make the same ONNX model faster than Python: the
 native inference engine does most of the work in both cases.
 
-Service integration is synchronous today. `choose_async()` is a `std::async`
-convenience, not a bounded scheduler or coroutine API. There is no shipped Asio
+`choose_async()` remains a `std::async` convenience. The optional
+[batching backend](docs/BATCHING.md) adds bounded workers, microbatching and
+owned future submission. Neither is a coroutine API. There is no shipped Asio
 adapter or cancellation API. See [concurrency and service integration](https://wiatrm.github.io/jevtpp/concurrency/).
 
 ## Performance
@@ -161,7 +162,8 @@ target on this workload.
 
 A separate **Python + CUDA experiment** on an RTX 4090 reached **14.1 ms p50 /
 15.7 ms p95** for the same four-field fixture. This shows GPU headroom, **not
-GPU support in the current JevT++ adapter**. See the report for numerical parity
+GPU support in the released v0.2.0 adapter**. Current `main` now includes native
+C++ CUDA selection, warmup, bounded batching and cache/buffer controls. See the report for numerical parity
 and hardware/runtime details; this is not a quality comparison with Jev.
 
 See [measurements, methodology and reproduction](docs/PERFORMANCE.md) for the

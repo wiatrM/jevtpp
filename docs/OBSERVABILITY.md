@@ -8,7 +8,7 @@ possible consumer.
 
 A `jevt::Diagnostics` registry is configured with
 `jevt::DiagnosticsOptions` (recent-call capacity, maximum decisions, maximum
-tag length and histogram bounds). `record_call()` accepts the decision ID,
+tag length, histogram bounds and recent-trace sampling). `record_call()` accepts the decision ID,
 `CallOutcome::success`, `error` or `abstain`, a nanosecond duration, and an
 optional bounded tag. `snapshot()` returns:
 
@@ -23,9 +23,17 @@ unit and sample count. The nearest-rank bucket (`ceil(q * calls)`) supplies its
 upper bound; overflow uses the maximum observed latency for that aggregate
 since construction or `reset()`, not its mean. These conservative estimates
 are not exact sample percentiles. Empty windows use zero-valued latency statistics. Call
-counts are exact where practical; snapshots taken while
+counts and histogram bucket counts include every recorded call, even when
+recent traces are sampled or disabled. Snapshots taken while
 calls are active are internally consistent but naturally become historical
 immediately after capture.
+
+`recent_sample_every` defaults to `1`, retaining every call up to
+`recent_capacity` (default `256`). Set it to `N` to retain calls `1`, `1 + N`,
+`1 + 2N`, and so on within each measurement window. Set either option to zero
+to disable recent traces while keeping aggregate metrics. Recent-call
+`sequence` values are call ordinals and can therefore have gaps. `reset()`
+clears both metrics and traces and restarts the sampling window.
 
 Do not use raw user text, customer IDs, arbitrary labels or exception messages
 as metric dimensions. This prevents cardinality explosions and data leakage.
@@ -100,11 +108,20 @@ full model output is off by default. If future tracing is added, it should use
 explicit sampling, caller-provided redaction, bounded retention and separate
 access control.
 
+The optional `batching_backend` also exposes `stats()` with queue depth,
+in-flight requests, accepted/rejected/completed requests and batch count.
+These scheduling counters are separate from decision outcome diagnostics.
+
 ## Benchmark expectations
 
-Diagnostics benchmarks compare disabled recording, enabled recording and
-concurrent snapshotting. Report operations per second and p50/p95/p99, not
-only a mean. Scenarios should include one hot schema, many schemas, mixed
+`jevt_diagnostics_contention` runs concurrent writers and a continuously
+snapshotting reader. Its arguments are writer count, calls per writer, recent
+capacity and sampling interval; defaults are `4 100000 256 1`. It reports
+calls per second and p50/p95 recording and snapshot latency. Compare full,
+sampled and disabled recent traces on the same hardware; disabling traces
+does not disable counters. No default-mode speedup is assumed.
+
+Broader benchmark scenarios should include one hot schema, many schemas, mixed
 outcomes and a reader taking snapshots under write load. A CI smoke test checks
 correct execution; stable performance thresholds belong on controlled
 hardware rather than shared hosted runners.

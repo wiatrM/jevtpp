@@ -24,8 +24,16 @@
 - Compile-negative schema checks, installed-consumer tests, sanitizers, shared
   builds, HTTP protocol regressions and 20 synthetic ONNX contract fixtures.
 
-No CUDA execution provider, Asio adapter or coroutine API has been added to
-the C++ library in these changes.
+- Explicit CUDA selection, representative warmup, schema token cache, shared-state
+  tokenization, bounded host-buffer reuse and opt-in ORT I/O binding.
+- Typed field projection, context token budgets, ORT parallel/spinning controls.
+- Bounded backend workers, owned future submission, cross-request microbatching,
+  length buckets, overload rejection and graceful draining shutdown.
+- Exact metrics with sampled recent traces; diagnostics contention and concurrent
+  Laya load benchmarks; opt-in FP16/INT8 conversion and quality/parity gates.
+
+No Asio adapter, coroutine API, persistent CUDA device-buffer pool or CUDA Graph
+replay is provided. Precision candidates are not enabled by default.
 
 ## 0.2.0
 

@@ -187,11 +187,81 @@ Keep the backend loaded and warm it using representative request shapes.
 Sweep thread counts on the deployment machine; the highest thread count can
 be slower. Keep context focused and measure both single-field and multi-field
 requests. For GPU latency targets, a GPU execution provider or a specialized
-backend is the next relevant layer; the released JevT++ adapter currently
-selects CPU only.
+backend is the next relevant layer. Release v0.2.0 selects CPU only; current
+`main` additionally supports explicit CUDA and the controls below.
 
 Any precision reduction, quantization, truncation or backend change needs
 probability parity and labeled quality checks. The eight-ticket quality smoke
 set is useful for exercising the harness, but cannot establish domain accuracy
 or calibration. Core keyword-backend timings measure application overhead,
 not neural inference.
+
+## Native CUDA and execution controls (unreleased)
+
+Local exploratory measurements on 2026-09-24: RTX 4090, ORT GPU 1.29.0,
+unchanged pinned multilingual ONNX model, TF32 disabled, two intra-op threads.
+The latency fixture remains four fields, maximum sequence length 166, five
+warmups and 50 timed calls after a separately reported cold call. These are
+short shared-workstation runs, not a same-hardware comparison with other projects.
+See [native CUDA observations](../benchmarks/results/2026-09-24-native-cuda.jsonl).
+
+| Path | p50 | p95 |
+|---|---:|---:|
+| Native C++ CUDA, ordinary Run | 13.206 ms | 14.240 ms |
+| Native C++ CUDA, host I/O binding | 13.513 ms | 19.725 ms |
+
+CPU/CUDA probability parity over the separate empty/Unicode/long-input test
+observed maximum absolute delta `7.15256e-7`, below its `1e-4` gate. This does not
+establish domain quality. Host I/O binding remains **off** by default: this probe
+shows no benefit. Both paths use the same session reuse, token cache and host pool.
+
+A separate closed-loop load smoke test with four clients, four fields each,
+25 calls/client, one worker, 16-row microbatches and a 1 ms accumulation delay
+completed 100/100 calls in 0.820 s: 122.0 calls/s (488.0 fields/s), end-to-end
+p50 33.00 ms and p95 39.37 ms. No errors/rejections occurred. These numbers show
+the latency/throughput tradeoff, not the capacity limit or an open-loop SLA.
+
+```sh
+jevt_laya_latency models/laya-multilingual 2 4 50 cuda 0
+jevt_laya_latency models/laya-multilingual 2 4 50 cuda 1
+jevt_laya_load models/laya-multilingual cuda 2 4 4 25 16 1000 0
+jevt_diagnostics_contention 4 200000 256 16
+```
+
+Thread tuning is a deployment experiment: sweep ORT threads (1/2/4/default),
+clients and batch rows together, keeping the model/input/precision fixed. The
+load harness records all attempts, errors/rejections, throughput and successful
+request percentiles. Do not derive throughput from reciprocal p50.
+
+Diagnostics retain exact counters/histograms with optional sampled traces. Two
+four-writer stress runs (200k calls/writer, continuous snapshots) measured
+default record p95 16.86/19.19 microseconds, versus 1.20/1.00 microseconds with
+`recent_sample_every=16`. Results are noisy; no default speedup is claimed.
+
+## Why laya.cpp's published numbers differ
+
+Source inspected: [`laya.cpp` e1c6e78](https://github.com/lkarlslund/laya.cpp/tree/e1c6e7832189d36903e90c6fe3b8b1fece7f6f17).
+This is a different inference engine (ggml and model-specific GPU paths), not
+another wrapper around the same ONNX graph. Both projects reuse loaded models.
+
+Its [optimized arithmetic](https://github.com/lkarlslund/laya.cpp/blob/e1c6e7832189d36903e90c6fe3b8b1fece7f6f17/docs/architecture.md)
+uses compensated FP16 Tensor Core products for its FP32 mode, fused QKV/rotary
+and GELU operations, plus reusable GPU graphs. Its FP32 fused-attention path is
+limited to sequences through 128 tokens; longer sequences use cuBLAS attention.
+JevT++ does not implement these custom kernels or graph replay. Our TF32-off ORT
+path is not equivalent to their `--tensor-core-fp32 --flash-fp32` flags.
+
+Their [published measurements](https://github.com/lkarlslund/laya.cpp/blob/e1c6e7832189d36903e90c6fe3b8b1fece7f6f17/docs/measurements/readme-performance.json)
+use RTX PRO 6000 Blackwell 96 GB, a varied 250-question corpus and matching-
+precision Python/PyTorch baselines. Multilingual FP32 batch four reports
+p50 2.944 ms and p95 25.046 ms; the table's 673.4 figure is **questions/second**,
+not requests/second or milliseconds. Our repeated four-field fixture on RTX4090
+is not a matched workload. Model source revision matches our export's provenance,
+but the artifact, output work and implementation differ.
+
+Their [methodology](https://github.com/lkarlslund/laya.cpp/blob/e1c6e7832189d36903e90c6fe3b8b1fece7f6f17/docs/benchmarking.md)
+validates precision against a same-precision baseline; BF16 agreement is not
+FP32 agreement. These architectural differences are plausible contributors, not
+a measured breakdown of the gap. A fair comparison needs identical hardware,
+corpus, shape groups, precision, output contract and timing boundaries. We have
+not executed that head-to-head comparison or integrated their backend.

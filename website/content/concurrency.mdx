@@ -13,12 +13,15 @@ wrapping it in a coroutine does not make its computation asynchronous.
 |---|---|
 | Concurrent calls through a bound handle | Supported only when the supplied backend is thread-safe |
 | Laya tokenizer access | Serialized by an internal tokenizer mutex |
-| Laya inference | Shared ORT session, per-call tensors; application must bound concurrent requests |
+| Laya inference | Shared ORT session; exclusive per-call tensor buffers can be reused after completion |
 | Diagnostics recording and snapshots | Internally synchronized |
 | `choose_async(std::string)` | `std::async(std::launch::async)` returning `std::future` |
+| Bounded workers and microbatching | Optional `jevt::batching_backend` wrapper |
+| Queued future API | `batching_backend::submit()` owns request text and returns `std::future` |
 | Coroutine / `co_await` API | Not provided |
 | Boost.Asio / standalone Asio adapter | Not provided |
-| Bounded queue, cancellation, deadlines, backpressure | Application responsibility |
+| Queue admission | Configurable capacity; overload and shutdown return structured errors |
+| Deadlines and cancellation of running inference | Application responsibility; no inference cancellation API |
 
 Input string views only need to remain alive for the synchronous call.
 `choose_async()` instead takes an owned string and copies the bound handle,
@@ -40,12 +43,43 @@ discard these futures expecting fire-and-forget behavior, and do not call
 `get()` on an I/O event-loop thread. Prefer the synchronous API behind your
 service's controlled executor for sustained load.
 
+## Bounded workers and microbatching
+
+Include `<jevt/batching.hpp>` and wrap a shared backend in
+`jevt::batching_backend` to use a bounded queue and worker pool. Configure
+`worker_count`, `queue_capacity`, `max_batch_size` and `max_delay` through
+`jevt::batching_options`. Optional `length_bucket_width` groups requests by
+total text bytes to reduce length variation within a batch; results retain
+caller order. With multiple workers, the wrapped backend must be thread-safe.
+
+`submit(request)` copies all request text, including option labels, before
+returning a future. `predict()` and `predict_batch()` remain synchronous and
+wait for their queued results. A full queue returns `error_code::overloaded`;
+after shutdown starts, new requests receive `error_code::shutting_down`.
+Batch admission is atomic: an oversized batch or insufficient queue capacity
+rejects the whole batch.
+
+`queue_capacity` bounds waiting requests. Up to
+`worker_count * max_batch_size` additional requests can execute. It is a
+request-count limit, so enforce input byte limits in the application too.
+`max_delay` controls batch formation, not an end-to-end request deadline.
+`stats()` reports queue depth, in-flight requests, admissions, rejections,
+completions and executed batches.
+
+`shutdown()` stops admission, drains accepted work and joins workers. It
+waits for the wrapped backend to return and does not cancel ONNX inference.
+Do not destroy the wrapper from one of its backend callbacks or while callers
+still access it. Recursive synchronous calls and shutdown from its own workers
+are rejected. The wrapper supplies neither coroutine support nor an Asio
+completion-token adapter.
+
 ## Integrating an Asio-based service today
 
 This is an integration pattern, **not a shipped adapter**:
 
 1. Validate request size and deadline on the I/O executor.
-2. Acquire capacity from a bounded inference queue; reject overload explicitly.
+2. Use a bounded inference queue, such as `batching_backend`, and handle
+   overload explicitly.
 3. Copy/own the input and binding, then run synchronous inference on a dedicated
    worker executor. Do not post blocking inference back onto the I/O executor.
 4. Deliver the result on the handler's associated executor, preserving its
@@ -59,8 +93,8 @@ Budget both the number of workers and ORT intra-op threads. Eight inference
 workers each creating their own large ORT pool can worsen p95 through CPU
 oversubscription. Measure queue delay separately from execution time.
 
-A future library adapter should support completion tokens, associated
-executors/allocators, `use_awaitable`, bounded admission, cancellation semantics
+A future Asio adapter should support completion tokens, associated
+executors/allocators, `use_awaitable`, cancellation semantics
 and shutdown tests. Those are release criteria, not existing features.
 
 ## Lifetime and global state

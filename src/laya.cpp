@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <deque>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -110,6 +112,8 @@ std::string ort_path(const std::filesystem::path& path) { return path.string(); 
 struct laya_backend::impl {
     explicit impl(laya_options requested)
         : options(std::move(requested)), environment(ORT_LOGGING_LEVEL_WARNING, "jevt-laya") {
+        if (options.intra_op_threads < 0 || options.inter_op_threads < 0 || options.device_id < 0)
+            throw std::invalid_argument("Laya thread counts and device_id must be nonnegative");
         resolve_paths();
         const auto agent_json = read_file(options.agent_config_file);
         max_len = json_integer(agent_json, "max_len");
@@ -136,8 +140,21 @@ struct laya_backend::impl {
         Ort::SessionOptions session_options;
         if (options.intra_op_threads > 0) session_options.SetIntraOpNumThreads(options.intra_op_threads);
         if (options.inter_op_threads > 0) session_options.SetInterOpNumThreads(options.inter_op_threads);
+        session_options.SetExecutionMode(options.parallel_execution ? ORT_PARALLEL : ORT_SEQUENTIAL);
+        session_options.AddConfigEntry("session.intra_op.allow_spinning", options.allow_spinning ? "1" : "0");
+        session_options.AddConfigEntry("session.inter_op.allow_spinning", options.allow_spinning ? "1" : "0");
         session_options.SetGraphOptimizationLevel(options.enable_graph_optimizations
             ? GraphOptimizationLevel::ORT_ENABLE_ALL : GraphOptimizationLevel::ORT_DISABLE_ALL);
+        if (options.provider == laya_provider::cuda) {
+            const auto providers = Ort::GetAvailableProviders();
+            if (std::find(providers.begin(), providers.end(), "CUDAExecutionProvider") == providers.end())
+                throw std::runtime_error("CUDAExecutionProvider unavailable; install an ONNX Runtime GPU build (no CPU fallback)");
+            Ort::CUDAProviderOptions cuda;
+            cuda.Update({{"device_id", std::to_string(options.device_id)},
+                         {"use_tf32", options.use_tf32 ? "1" : "0"},
+                         {"do_copy_in_default_stream", "1"}});
+            session_options.AppendExecutionProvider_CUDA_V2(*cuda);
+        }
         const auto path = ort_path(options.model_file);
         session = std::make_unique<Ort::Session>(environment, path.c_str(), session_options);
         validate_contract();
@@ -207,8 +224,29 @@ struct laya_backend::impl {
         return {encoded.begin(), encoded.end()};
     }
 
-    std::pair<std::vector<std::int64_t>, std::vector<std::int64_t>> build_sequence(
+    struct prepared_head {
+        std::vector<std::int64_t> ids, markers;
+    };
+
+    std::shared_ptr<const prepared_head> prepare_head(
         const inference_request& request, std::span<const std::string> options_text) {
+        // Length-prefix every component. Identity includes kind and exact text;
+        // cache lifetime is one immutable model/tokenizer/options instance.
+        std::string key(1, static_cast<char>(request.question_kind));
+        const auto append_key = [&](std::string_view text) {
+            key += std::to_string(text.size()); key += ':'; key += text;
+        };
+        append_key(request.question);
+        for (const auto& option : options_text) append_key(option);
+        const bool cacheable = options.schema_cache_entries && key.size() <= options.schema_cache_bytes;
+        if (cacheable) {
+            std::lock_guard lock(cache_mutex);
+            if (const auto found = head_cache.find(key); found != head_cache.end()) {
+                ++cache_hits;
+                return found->second;
+            }
+        }
+        ++cache_misses;
         const auto type = request.question_kind == inference_request::kind::noul ? std::string{"noul"}
             : request.question_kind == inference_request::kind::score ? std::string{"score"}
             : std::string{"choice"};
@@ -234,25 +272,90 @@ struct laya_backend::impl {
         const auto head_budget = head_max_len > total ? head_max_len - total : std::size_t{8};
         if (head.size() > std::max<std::size_t>(8, head_budget)) head.resize(std::max<std::size_t>(8, head_budget));
 
-        std::vector<std::int64_t> sequence{cls_id};
+        auto prepared = std::make_shared<prepared_head>();
+        auto& sequence = prepared->ids;
+        auto& markers = prepared->markers;
+        sequence.push_back(cls_id);
         sequence.insert(sequence.end(), head.begin(), head.end());
         sequence.push_back(sep_id);
-        std::vector<std::int64_t> markers;
         for (const auto& encoded : option_ids) {
             markers.push_back(static_cast<std::int64_t>(sequence.size()));
             sequence.insert(sequence.end(), encoded.begin(), encoded.end());
         }
         sequence.push_back(sep_id);
+        if (cacheable) {
+            std::string map_key = key;
+            // Count retained payload capacity (not allocator/container metadata).
+            const auto bytes = key.capacity() + map_key.capacity() +
+                (sequence.capacity() + markers.capacity()) * sizeof(std::int64_t);
+            std::lock_guard lock(cache_mutex);
+            if (bytes <= options.schema_cache_bytes && !head_cache.contains(key)) {
+                while (!cache_order.empty() && (head_cache.size() >= options.schema_cache_entries ||
+                       cached_bytes > options.schema_cache_bytes - bytes)) {
+                    cached_bytes -= cache_order.front().second;
+                    head_cache.erase(cache_order.front().first);
+                    cache_order.pop_front();
+                }
+                cache_order.emplace_back(std::move(key), bytes);
+                try { head_cache.emplace(std::move(map_key), prepared); }
+                catch (...) { cache_order.pop_back(); throw; }
+                cached_bytes += bytes;
+            }
+        }
+        return prepared;
+    }
+
+    std::pair<std::vector<std::int64_t>, std::vector<std::int64_t>> build_sequence(
+        const inference_request& request, std::span<const std::string> options_text,
+        const std::vector<std::int64_t>& state) {
+        const auto prepared = prepare_head(request, options_text);
+        auto sequence = prepared->ids;
+        auto markers = prepared->markers;
         const auto room = max_len > sequence.size() + 1 ? max_len - sequence.size() - 1 : 0;
-        auto state = encode(replace_all(std::string{request.input}, mask_token, " "));
-        if (state.size() > room) state.resize(room);
-        sequence.insert(sequence.end(), state.begin(), state.end());
+        const auto budget = options.context_token_limit ? std::min(room, options.context_token_limit) : room;
+        sequence.insert(sequence.end(), state.begin(), state.begin() + std::min(state.size(), budget));
         sequence.push_back(sep_id);
         if (sequence.size() > max_len) sequence.resize(max_len);
         markers.erase(std::remove_if(markers.begin(), markers.end(), [&](auto value) {
             return static_cast<std::size_t>(value) >= sequence.size();
         }), markers.end());
         return {std::move(sequence), std::move(markers)};
+    }
+
+    struct buffers {
+        std::vector<std::int64_t> input_ids, attention, positions, qtypes;
+        std::unique_ptr<bool[]> mask;
+        std::size_t mask_capacity{};
+        [[nodiscard]] std::size_t bytes() const {
+            return (input_ids.capacity() + attention.capacity() + positions.capacity() + qtypes.capacity()) *
+                   sizeof(std::int64_t) + mask_capacity * sizeof(bool);
+        }
+    };
+    struct buffer_lease {
+        impl& owner;
+        std::unique_ptr<buffers> value;
+        ~buffer_lease() {
+            if (!value || value->bytes() > owner.options.reusable_buffer_bytes) return;
+            // Retained buffers contain input tokens: wipe before pooling.
+            std::fill(value->input_ids.begin(), value->input_ids.end(), 0);
+            try {
+                std::lock_guard lock(owner.pool_mutex);
+                if (owner.pool.size() < owner.options.reusable_buffers) owner.pool.push_back(std::move(value));
+            } catch (...) { /* caching must not turn a successful call into failure */ }
+        }
+    };
+    buffer_lease acquire_buffers() {
+        std::lock_guard lock(pool_mutex);
+        if (pool.empty()) return {*this, std::make_unique<buffers>()};
+        auto value = std::move(pool.back()); pool.pop_back(); ++buffer_reuses;
+        return {*this, std::move(value)};
+    }
+
+    std::vector<std::int64_t> encode_state(std::string_view input) {
+        auto full = encode(replace_all(std::string{input}, mask_token, " "));
+        const auto limit = options.context_token_limit ? std::min(max_len, options.context_token_limit) : max_len;
+        // Do not retain a huge unused token-vector capacity across a batch.
+        return {full.begin(), full.begin() + std::min(full.size(), limit)};
     }
 
     result<std::vector<inference_response>> predict_batch(std::span<const inference_request> requests) {
@@ -269,6 +372,9 @@ struct laya_backend::impl {
             items.reserve(requests.size());
             std::size_t length = 8;
             std::size_t marker_width = 2;
+            // Shared state across typed fields is encoded once per batch, never
+            // persisted in the schema cache. Views live only during this call.
+            std::unordered_map<std::string_view, std::vector<std::int64_t>> states;
             for (const auto& request : requests) {
                 item current;
                 current.qtype = request.question_kind == inference_request::kind::noul ? 2U
@@ -291,7 +397,10 @@ struct laya_backend::impl {
                         current.options.push_back(std::move(rendered));
                     }
                 }
-                auto sequence = build_sequence(request, current.options);
+                auto state_found = states.find(request.input);
+                if (state_found == states.end())
+                    state_found = states.emplace(request.input, encode_state(request.input)).first;
+                auto sequence = build_sequence(request, current.options, state_found->second);
                 current.ids = std::move(sequence.first);
                 current.markers = std::move(sequence.second);
                 if (current.markers.size() != current.options.size())
@@ -307,11 +416,24 @@ struct laya_backend::impl {
             }
 
             const std::size_t batch = items.size();
-            std::vector<std::int64_t> input_ids(batch * length, pad_id);
-            std::vector<std::int64_t> attention(batch * length, 0);
-            std::vector<std::int64_t> marker_positions(batch * marker_width, 0);
-            std::unique_ptr<bool[]> marker_mask{new bool[batch * marker_width]{}};
-            std::vector<std::int64_t> qtypes(batch, 0);
+            if (batch > std::numeric_limits<std::size_t>::max() / std::max(length, marker_width))
+                return error{error_code::invalid_request, "Laya batch dimensions overflow"};
+            auto lease = acquire_buffers();
+            auto& storage = *lease.value;
+            auto& input_ids = storage.input_ids;
+            auto& attention = storage.attention;
+            auto& marker_positions = storage.positions;
+            auto& marker_mask = storage.mask;
+            auto& qtypes = storage.qtypes;
+            input_ids.assign(batch * length, pad_id);
+            attention.assign(batch * length, 0);
+            marker_positions.assign(batch * marker_width, 0);
+            if (storage.mask_capacity < batch * marker_width) {
+                marker_mask = std::make_unique<bool[]>(batch * marker_width);
+                storage.mask_capacity = batch * marker_width;
+            }
+            std::fill_n(marker_mask.get(), batch * marker_width, false);
+            qtypes.assign(batch, 0);
             for (std::size_t row = 0; row < batch; ++row) {
                 const auto& current = items[row];
                 std::copy(current.ids.begin(), current.ids.end(), input_ids.begin() + row * length);
@@ -336,8 +458,22 @@ struct laya_backend::impl {
                 Ort::Value::CreateTensor<std::int64_t>(memory, qtypes.data(), qtypes.size(), qtype_shape.data(), 1)};
             constexpr std::array input_names{"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"};
             constexpr std::array output_names{"logits"};
-            auto outputs = session->Run(Ort::RunOptions{nullptr}, input_names.data(), tensors.data(), tensors.size(),
-                                        output_names.data(), output_names.size());
+            std::vector<Ort::Value> outputs;
+            ++runs;
+            if (options.use_io_binding) {
+                Ort::IoBinding binding{*session};
+                for (std::size_t i = 0; i < tensors.size(); ++i) binding.BindInput(input_names[i], tensors[i]);
+                // Tiny probability output belongs on CPU for validation/softmax.
+                // Let ORT allocate it so malformed output shapes remain detectable.
+                binding.BindOutput("logits", memory);
+                binding.SynchronizeInputs();
+                session->Run(Ort::RunOptions{nullptr}, binding);
+                binding.SynchronizeOutputs();
+                outputs = binding.GetOutputValues();
+            } else {
+                outputs = session->Run(Ort::RunOptions{nullptr}, input_names.data(), tensors.data(), tensors.size(),
+                                       output_names.data(), output_names.size());
+            }
             if (outputs.size() != 1 || !outputs[0].IsTensor())
                 return error{error_code::invalid_backend_output, "Laya logits output must be a tensor"};
             const auto info = outputs[0].GetTensorTypeAndShapeInfo();
@@ -381,6 +517,12 @@ struct laya_backend::impl {
     std::unique_ptr<Ort::Session> session;
     std::unique_ptr<tokenizers::Tokenizer> tokenizer;
     std::mutex tokenizer_mutex;
+    mutable std::mutex cache_mutex, pool_mutex;
+    std::unordered_map<std::string, std::shared_ptr<const prepared_head>> head_cache;
+    std::deque<std::pair<std::string, std::size_t>> cache_order;
+    std::size_t cached_bytes{};
+    std::vector<std::unique_ptr<buffers>> pool;
+    std::atomic<std::uint64_t> cache_hits{}, cache_misses{}, buffer_reuses{}, runs{};
     std::size_t max_len{};
     std::size_t head_max_len{};
     std::array<float, 3> temperatures{1.0F, 1.0F, 1.0F};
@@ -399,6 +541,20 @@ result<std::vector<inference_response>> laya_backend::predict_batch(
 std::string_view laya_backend::name() const noexcept { return impl_->options.model_id; }
 std::size_t laya_backend::max_context_tokens() const noexcept { return impl_->max_len; }
 std::size_t laya_backend::max_question_tokens() const noexcept { return impl_->head_max_len; }
+laya_provider laya_backend::provider() const noexcept { return impl_->options.provider; }
+result<std::size_t> laya_backend::warmup(std::span<const inference_request> requests, std::size_t iterations) {
+    if (requests.empty()) return error{error_code::invalid_request, "warmup requires representative requests"};
+    for (std::size_t i = 0; i < iterations; ++i) {
+        auto response = predict_batch(requests);
+        if (!response) return response.error_value();
+    }
+    return iterations;
+}
+laya_statistics laya_backend::statistics() const {
+    std::scoped_lock lock(impl_->cache_mutex, impl_->pool_mutex);
+    return {impl_->cache_hits.load(), impl_->cache_misses.load(), impl_->buffer_reuses.load(), impl_->runs.load(),
+            impl_->head_cache.size(), impl_->cached_bytes, impl_->pool.size()};
+}
 
 namespace models {
 std::shared_ptr<backend> laya_multilingual(std::filesystem::path directory, int threads) {

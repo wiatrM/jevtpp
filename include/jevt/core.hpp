@@ -97,6 +97,8 @@ enum class error_code : std::uint8_t {
     backend_failure,
     invalid_backend_output,
     not_initialized,
+    overloaded,
+    shutting_down,
 };
 
 struct error {

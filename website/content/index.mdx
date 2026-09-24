@@ -25,13 +25,13 @@ release, use the documentation in that release's Git tag and review the
 ## What runs today
 
 - C++20 core with explicit success, abstention and technical-error paths.
-- Optional Laya backend using ONNX Runtime **CPU** and native tokenization.
+- Optional Laya backend using ONNX Runtime CPU or explicit CUDA and native tokenization.
 - Multi-field inference in one ONNX batch, with metadata and shared input.
 - Diagnostics snapshots, Prometheus export and an optional loopback HTTP view.
 
-The library does **not** currently provide CUDA selection, a hosted Jev client,
-an Asio adapter, cancellation or a bounded async scheduler. The Python/CUDA
-benchmark is a separate experiment, not a C++ feature.
+An optional [bounded worker pool](batching) provides owned future submission,
+cross-request microbatching and length buckets. There is no hosted Jev client,
+Asio adapter, coroutine API or cancellation of running inference.
 
 JevT++ is independent of TypeSafe. Its open-source Laya model is not the
 proprietary Jev model. Type-safe output does not guarantee a correct business

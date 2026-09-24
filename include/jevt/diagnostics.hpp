@@ -19,6 +19,10 @@ struct DiagnosticsOptions {
   std::vector<double> histogram_bounds_ms{
       0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
       5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0};
+  // Retain calls 1, 1 + N, 1 + 2N, ... in each reset window. Zero disables
+  // recent traces; counters and histograms always include every call.
+  // recent_capacity limits retained samples, independently of this interval.
+  std::size_t recent_sample_every = 1;
 };
 
 struct HistogramSnapshot {
@@ -46,6 +50,7 @@ struct DecisionSnapshot {
 };
 
 struct RecentCall {
+  // Call ordinal within the reset window; sampled traces can have gaps.
   std::uint64_t sequence = 0;
   std::int64_t unix_time_ms = 0;
   std::string decision;

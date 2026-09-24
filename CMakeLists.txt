@@ -18,7 +18,7 @@ set(JEVT_LAYA_MODEL_DIR "" CACHE PATH "Model bundle used by the opt-in Laya inte
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(JEVT_SOURCES src/runtime.cpp src/diagnostics.cpp)
+set(JEVT_SOURCES src/runtime.cpp src/diagnostics.cpp src/batching.cpp)
 if(JEVT_ENABLE_HTTP)
   list(APPEND JEVT_SOURCES src/http_server.cpp)
 endif()

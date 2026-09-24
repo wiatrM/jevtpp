@@ -85,6 +85,29 @@ JEVT_TEST("metadata and one shared state reach a single batch") {
     JEVT_REQUIRE_NEAR(mapped.sentiment_probability, 0.75, 1e-6);
 }
 
+JEVT_TEST("field projection computes only requested typed answers with explicit context") {
+    std::size_t calls = 0;
+    auto backend = std::make_shared<jevt::function_backend>([&](const jevt::inference_request& r)
+        -> jevt::result<jevt::inference_response> {
+        ++calls;
+        JEVT_REQUIRE_EQ(r.input, "focused ticket context");
+        if (calls == 1) {
+            JEVT_REQUIRE_EQ(r.decision_id, "support.ticket.is_urgent");
+            return jevt::inference_response{{0.1F, 0.9F}, "fixture"};
+        }
+        JEVT_REQUIRE_EQ(r.decision_id, "support.ticket.category");
+        return jevt::inference_response{{0.01F, 0.97F, 0.01F, 0.01F}, "fixture"};
+    });
+    constexpr auto projection = jevt::select_fields<"is_urgent", "category">(model);
+    static_assert(decltype(projection)::size == 2);
+    const auto runner = jevt::bind_system_one(model, backend).select<"is_urgent", "category">();
+    const auto answer = runner.evaluate(ticket{"focused ticket context"});
+    JEVT_REQUIRE(answer);
+    JEVT_REQUIRE_EQ(calls, 2U);
+    JEVT_REQUIRE(answer->get<"is_urgent">().value());
+    JEVT_REQUIRE_EQ(answer->get<"category">().value(), category::technical);
+}
+
 JEVT_TEST("uncertainty remains inspectable when a field abstains") {
     auto backend = std::make_shared<fake_batch_backend>();
     backend->output[0].scores = {1, 1, 1, 1};

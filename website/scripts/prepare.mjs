@@ -8,6 +8,7 @@ const references = {
   'system-one': 'docs/SYSTEM_ONE.md', laya: 'docs/LAYA.md',
   observability: 'docs/OBSERVABILITY.md', performance: 'docs/PERFORMANCE.md',
   architecture: 'docs/ARCHITECTURE.md',
+  batching: 'docs/BATCHING.md', precision: 'docs/PRECISION.md',
 };
 const config = JSON.parse(await readFile(path.join(root, 'docs.json'), 'utf8'));
 const pages = config.navigation.groups.flatMap(group => group.pages);

@@ -84,7 +84,7 @@ contain `Team`, `option<>`, or other application-specific template types.
 
 Required properties:
 
-- safe concurrent inference after preparation;
+- safe concurrent inference when the application uses concurrent callers;
 - structured error categories rather than parsing messages;
 - no ownership of user input beyond the call unless the user opts in;
 - a score vector matching the requested option count.
@@ -120,8 +120,14 @@ same result the caller receives. The registry is also available from
 Each bound decision records bounded, low-cardinality measurements in a
 shared registry. The supported public operation is a consistent snapshot,
 which keeps exporters independent from inference. Percentiles come from a
-bounded histogram or mergeable sketch; request threads never sort a global
+bounded histogram; request threads never sort a global
 list and raw latency samples do not grow without limit.
+
+Counters and histogram buckets cover every recorded call. Optional
+`recent_sample_every` sampling affects only retained recent-call metadata;
+`recent_capacity` bounds retention, and either option set to zero disables
+recent traces. The default sampling interval is one. Snapshots and resets
+remain synchronized with recording.
 
 HTTP is an optional adapter over this API, not the owner of metrics. The
 dashboard must be separately enabled, should default to loopback, and must
@@ -130,11 +136,24 @@ never make inference availability depend on the web server. See
 
 ## Optional ONNX adapter
 
-The production adapter is deliberately outside the baseline core package. It
-must validate model metadata, tensor shapes and label mappings at binding time
-and preserve tokenizer parity with the reference model. Applications can
+The optional Laya adapter validates model metadata and tensor contracts during
+construction and validates output shapes and values on each inference call.
+It preserves tokenizer parity with the reference model. Applications can
 always supply their own backend adapter, so ONNX is never required to install
 or use the core.
+
+CPU execution is the default. `laya_provider::cuda` explicitly selects the
+CUDA provider, checks its availability and propagates initialization failure.
+TF32 is disabled by default. Optional I/O binding uses reusable host tensors;
+ONNX Runtime still performs device transfers. It does not provide zero-copy
+or CUDA-graph execution.
+
+Prepared question/option tokens use a bounded cache local to the model
+instance. Input state tokens are reused only within the current batch.
+Reusable tensor storage is leased exclusively to one call, and retained input
+tokens are wiped before storage returns to the pool. Limits on cache entries,
+retained payload capacity and pooled buffers are configurable. Warmup runs
+representative caller-supplied requests through the same session.
 
 ## Concurrency and lifetime
 
@@ -144,9 +163,19 @@ Backend-specific session pooling belongs behind the backend boundary.
 Snapshotting diagnostics is thread-safe and bounded in time.
 
 `choose_async()` uses `std::async(std::launch::async)` and an owned input
-string. It is not a coroutine, bounded executor, cancellation API or Asio
-integration. A future may block on destruction. Services should place the
-synchronous API behind their own bounded inference executor, off the I/O loop.
+string. A future may block on destruction. The optional `batching_backend`
+wrapper supplies bounded workers, queue admission, microbatching and
+`submit()` returning a future. Submission owns request text; synchronous
+`predict()` and `predict_batch()` wait for queued completion. Batch admission
+is atomic, overload returns a structured error, and optional length bucketing
+preserves caller result order. Multiple workers require a thread-safe wrapped
+backend.
+
+The queue limit counts waiting requests, with up to
+`worker_count * max_batch_size` additional requests executing. Shutdown stops
+admission and drains accepted work before joining workers. It cannot interrupt
+a backend call. Neither async API provides coroutines, Asio integration or
+running-inference cancellation. Keep blocking waits off the I/O loop.
 See the [concurrency guide](https://wiatrm.github.io/jevtpp/concurrency/).
 
 Stop the optional HTTP server before releasing its diagnostics registry.

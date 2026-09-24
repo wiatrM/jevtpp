@@ -136,6 +136,61 @@ distributions; JevT++ applies the declared abstention policy and maps answers
 to application types. Schema constraints guarantee the shape of a valid
 answer, not that a model's judgment is correct.
 
+## CUDA, warmup and bounded memory
+
+CPU is the default. To opt into CUDA, build/link against an ONNX Runtime **GPU**
+SDK and install its matching CUDA/cuDNN runtime libraries. The tested local
+runtime was ORT 1.29.0 on RTX 4090. A CPU SDK still compiles the adapter, but
+requesting CUDA fails explicitly when unavailable. Individual shape operations
+may still be assigned to CPU by ORT. See the official
+[CUDA requirements](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
+
+```cpp
+jevt::laya_options options;
+options.model_directory = "models/laya-multilingual";
+options.provider = jevt::laya_provider::cuda;
+options.intra_op_threads = 2;
+options.inter_op_threads = 1;
+options.use_tf32 = false;
+auto native = std::make_shared<jevt::laya_backend>(options);
+auto brain = jevt::bind_system_one(ticket, native); // your decision model
+auto batch = brain.request(jevt::text_state("Representative warmup input"));
+auto views = batch.views();
+auto warmed = native->warmup(views.requests(), 3);
+if (!warmed) throw std::runtime_error(warmed.error_value().message);
+auto routing_only = brain.select<"category">(); // computes one field, typed result
+auto answer = routing_only.evaluate("A new customer message");
+```
+
+Keep `native` and bindings alive across requests. `parallel_execution` explicitly
+enables ORT's inter-op execution mode; merely setting `inter_op_threads` does not.
+`allow_spinning=false` is available for shared hosts; benchmark the latency tradeoff.
+`context_token_limit=0` retains the bundle budget; a positive value limits state
+tokens without trimming the schema. Projection or truncation can change quality.
+
+Defaults cache up to 256 schema heads and 4 MiB of retained payload capacity
+(container/allocator overhead excluded), evicting FIFO. Set `schema_cache_entries=0`
+to disable. Cache identity includes exact question/criteria and kind, scoped to
+one model instance; state is never persisted in this cache. Identical state is
+tokenized once per batch, though each field still has its own transformer row.
+
+`reusable_buffers=2` retains at most two isolated host-buffer sets, each no larger
+than `reusable_buffer_bytes` (8 MiB by default). Input-token storage is cleared
+before reuse. Larger working buffers are released after their call. This is not
+a total memory or request-size limit. `statistics()` exposes cache hits/misses,
+retained payload, run count and buffer reuse. Input bytes still need a service limit.
+
+`use_io_binding=true` selects ORT I/O binding with host inputs and a host logits
+output. Device transfers still occur; this is not zero-copy, persistent device
+allocation or CUDA Graph replay. It is off by default because it did not improve
+our short latency probe. [Cross-request batching](BATCHING.md) and
+[precision experiments](PRECISION.md) are separate opt-in paths.
+
+Run `jevt_laya_performance_tests MODEL cuda` to compare against CPU at a `1e-4`
+probability tolerance, including Unicode, empty/long input, mixed kinds, cache
+eviction, warmup, host-buffer reuse and concurrent calls. The ordinary model CI
+runs its CPU version; hosted CI does not validate CUDA hardware.
+
 ## Model provenance and resources
 
 The download script pins the `multilingual/` export in

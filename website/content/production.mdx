@@ -33,6 +33,9 @@ Limit input size before tokenization. The adapter's token budget does not stop
 an application from accepting and copying a very large request first. Do not
 put raw customer data into diagnostic tags. Configure bounded retention and
 histogram bounds suited to actual latencies.
+`DiagnosticsOptions::recent_sample_every` samples only retained recent traces;
+all recorded calls still contribute to exact counters and histogram buckets.
+Zero disables recent traces, as does `recent_capacity = 0`.
 
 The diagnostics HTTP server is a small, single-client-at-a-time loopback
 utility, not an authenticated public service. It uses socket idle timeouts and
@@ -47,12 +50,32 @@ Report vulnerabilities through the repository's
 
 | Area | Current boundary |
 |---|---|
-| Accelerator support | C++ Laya adapter is CPU only; CUDA benchmark is exploratory |
-| Async integration | No production Asio adapter, bounded scheduler or cancellation API |
+| Accelerator support | CPU by default; explicit CUDA requires a compatible ONNX Runtime GPU build and device |
+| Async integration | Bounded workers, microbatching and future submission are available; no coroutine/Asio adapter or running-inference cancellation |
 | Quality | Eight-ticket example set is a smoke test, not a representative benchmark |
 | Confidence | Distribution concentration/threshold policies, not a domain accuracy guarantee |
 | Input structure | JSON is serialized context; syntax validation belongs to the caller |
 | Compatibility | Pre-1.0 APIs may change; review release notes and recompile consumers |
+
+The Laya adapter selects CUDA with
+`laya_options::provider = jevt::laya_provider::cuda`. It checks available
+providers and appends the CUDA execution provider; unavailable or failed CUDA
+initialization is reported rather than silently retrying construction on CPU.
+`use_tf32` defaults to `false`. Local C++ CPU/CUDA parity validation observed
+a maximum probability difference of `7.15e-7`; this is evidence for that tested
+configuration, not a guarantee across models, devices or runtime versions.
+
+Optional `use_io_binding` binds reusable host tensors. ONNX Runtime still
+performs device transfers; this is not zero-copy or CUDA-graph execution.
+Test the chosen provider, thread settings, batch sizes and representative
+inputs before enabling them in a service.
+
+`jevt::batching_backend` supplies bounded queue admission and an optional
+worker pool around a backend. Configure request capacity, worker count, batch
+size and batch-formation delay explicitly, and handle overload errors.
+Shutdown drains accepted work and waits for backend completion; application
+deadlines do not interrupt an active inference call. See the
+[concurrency guide](../concurrency/) for ownership and shutdown requirements.
 
 ## Release evidence
 

@@ -1,4 +1,6 @@
 find_package(Threads REQUIRED)
+add_executable(jevt_diagnostics_contention diagnostics_contention.cpp)
+target_link_libraries(jevt_diagnostics_contention PRIVATE jevt::jevt Threads::Threads)
 
 add_executable(jevt_benchmark benchmark.cpp)
 target_link_libraries(jevt_benchmark PRIVATE jevt::jevt Threads::Threads)
@@ -15,6 +17,8 @@ if(JEVT_BUILD_TESTS)
 endif()
 
 if(JEVT_ENABLE_LAYA)
+  add_executable(jevt_laya_load laya_load.cpp)
+  target_link_libraries(jevt_laya_load PRIVATE jevt::laya Threads::Threads)
   add_executable(jevt_laya_latency laya_latency.cpp)
   target_link_libraries(jevt_laya_latency PRIVATE jevt::laya)
   target_compile_features(jevt_laya_latency PRIVATE cxx_std_20)
