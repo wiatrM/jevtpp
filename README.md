@@ -1,15 +1,36 @@
-# JevT++
+<p align="center">
+  <img src="docs/assets/jevtpp-logo-readme.png" alt="JevT++ — typed decisions in C++" width="660">
+</p>
 
-**Jev-like decisions. Strong C++ types.**
+<p align="center">
+  <strong>Application context in. Typed decisions out.</strong><br>
+  A C++20 library for local model-backed routing, classification and scoring.
+</p>
 
-JevT++ is a C++20 library for embedding model-backed decisions in ordinary
-C++ control flow. Inject text, JSON or a serialized application object as shared
-context, then ask several independent questions with typed answers. Decision
-descriptions, field instructions and enum rubrics are part of the schema and
-are sent to the model. C++ checks the output vocabulary at compile time.
+<p align="center">
+  <a href="https://github.com/wiatrM/jevtpp/actions/workflows/ci.yml"><img src="https://github.com/wiatrM/jevtpp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/C%2B%2B-20-blue" alt="C++20">
+</p>
 
-The optional native Laya backend runs locally with ONNX Runtime. It evaluates
-all fields of a System One request in a single batched forward pass.
+JevT++ turns runtime text, JSON or application objects into enums, boolean
+decisions and scores your code can use directly. Define the available answers
+and their meaning once; supply new context on every call. The optional Laya
+adapter runs inference inside your process with ONNX Runtime.
+
+- **Typed vocabulary:** compile-time schemas, enum rubrics and explicit abstention.
+- **Shared context:** evaluate several independent fields in one Laya batch.
+- **Inspectable answers:** full distributions, P(true), fractional scores and confidence.
+- **Observable runtime:** latency percentiles, JSON/Prometheus metrics and an optional loopback dashboard.
+- **Small core:** no Python runtime, JSON library or ONNX dependency unless you enable the adapter.
+
+[Quick start](#build-and-test) · [System One API](docs/SYSTEM_ONE.md) ·
+[Laya setup](docs/LAYA.md) · [Performance](docs/PERFORMANCE.md) ·
+[Runnable demo](examples/laya_routing_demo.cpp)
+
+JevT++ is an independent open-source library. It is not the proprietary Jev
+model or an official TypeSafe SDK. The bundled adapter runs Laya; model quality
+depends on its weights and your task.
 
 ## One context, several typed answers
 
@@ -63,74 +84,85 @@ An ADL `to_jevt_state(const Record&)` customization is also supported. No JSON
 library is required by JevT++, and JSON syntax validation belongs to your
 serializer.
 
-Choice returns an enum and its full distribution. Score returns both the modal
-enum and the expected rubric position, including fractions. Noul exposes
-P(true) and an explicit true/false/abstain policy. A probability field exposes
-P(true) for its proposition; it is not arbitrary floating-point extraction.
-Choice and Score use entropy-based confidence. Questions are independent: an
-answer to one field is not fed into another field.
+| Field | Result | Example |
+|---|---|---|
+| `choice` | Enum, full distribution, entropy confidence | Which team owns this ticket? |
+| `noul` | True / false / abstain, with P(true) | Does it need attention within an hour? |
+| `score` | Modal enum and expected rubric position | Low / medium / high, with a fractional score |
+| `probability` | P(true) for a proposition | The customer is angry. |
+
+Questions are independent: an answer to one field is not fed into another.
+`probability` evaluates a proposition; it does not extract arbitrary numbers.
+Confidence expresses concentration of the distribution, not measured accuracy.
 
 See [System One API and serializers](docs/SYSTEM_ONE.md),
 [the runnable Laya demo](examples/laya_routing_demo.cpp), and
 [native inference setup](docs/LAYA.md).
 
-## Single decisions
+## Runtime input, compile-time vocabulary
 
-The single-decision runtime API has four operations:
-
-```cpp
-auto app = jevt::init({.inference_backend = backend});    // once
-auto routing = jevt::bind(support);                       // once per decision
-auto route = routing.choose(ticket);                      // typed choice
-auto human = escalation.evaluate(ticket);                // true/false/abstain
-```
-
-`init()` owns shared runtime resources, `bind()` prepares and validates a
-decision, and the hot-path calls do not re-resolve configuration. The same
-API works with a deterministic test backend, an application-defined backend,
-or the optional Laya ONNX Runtime adapter. Backends that do not override
-`predict_batch()` use the sequential compatibility implementation for System One.
-
-## A typed routing decision
+`constexpr` describes the output schema. Input arrives at runtime from your
+HTTP handler, queue, file or application state. A single-decision binding can
+be reused for each request:
 
 ```cpp
-#include <jevt/jevt.hpp>
-
-enum class Team { billing = 10, technical = 40, sales = 90 };
-
-inline constexpr auto support = jevt::schema<Team, "support.routing">(
-    jevt::option<Team::billing>("Invoices, refunds and payments"),
-    jevt::option<Team::technical>("Errors, outages and integrations"),
-    jevt::option<Team::sales>("Pricing and licence purchases")
-);
-
-int main() {
-    auto app = jevt::init({.inference_backend = backend});
-    auto routing = jevt::bind(support, {
-        .question = "Which team should handle this ticket?"
-    });
-
-    auto result = routing.choose("Card charged twice; please refund it");
-    if (!result) {
-        // Technical failure: backend unavailable or invalid output.
-        return 1;
-    }
-
-    if (result->abstained()) {
-        send_to_manual_review();
-    } else {
-        switch (result->value()) {
-        case Team::billing:   handle_billing(); break;
-        case Team::technical: handle_technical(); break;
-        case Team::sales:     handle_sales(); break;
-        }
-    }
-}
+auto app = jevt::init({.inference_backend = backend});
+auto routing = jevt::bind(categories, {.question = "Which team owns this ticket?"});
+std::string message = "Card charged twice; please refund it";
+auto result = routing.choose(message);  // message can change on every call
 ```
 
-Abstention is not an error and uncertain predicates never silently become
-`false`. See [the complete support routing example](examples/support_routing.cpp)
-and [the architecture](docs/ARCHITECTURE.md).
+The runtime also binds multi-field models with `jevt::bind_system_one(ticket)`
+and records one diagnostic call per evaluation. Direct binding with
+`bind_system_one(ticket, backend)` is available without global initialization.
+Custom backends can implement `predict_batch()`; its default implementation
+calls `predict()` sequentially.
+
+See the [complete routing example](examples/support_routing.cpp) for error,
+abstention and exhaustive typed dispatch handling.
+
+## Where JevT++ fits
+
+| Project | Execution | What it offers |
+|---|---|---|
+| **JevT++** | In-process C++20; current Laya adapter uses ONNX Runtime CPU | Compile-time enum schemas, typed field access, abstention and application diagnostics |
+| [Laya Python](https://github.com/NandhaKishorM/laya) | Local model runtime with CPU/GPU paths | Upstream model tooling and Python integration |
+| [Receptron Laya](https://github.com/receptron/laya) | Node.js/TypeScript + ONNX Runtime | Typed System One calls in JavaScript applications |
+| [laya.cpp](https://github.com/lkarlslund/laya.cpp) | Native C++ with ggml, CUDA/Vulkan/Core ML | Hardware-specific inference, CLI and Jev-compatible serving |
+| [TypeSafe Jev](https://docs.typesafe.ai/introduction) | Hosted proprietary model | Managed inference through a typed decision API |
+
+Choose JevT++ when decisions belong inside an existing C++ application and
+you want local inference with application-owned types. The library currently
+has no GPU execution-provider selection and no built-in hosted Jev client.
+Using C++ alone does not make the same ONNX model faster than Python: the
+native inference engine does most of the work in both cases.
+
+## Performance
+
+The original demo's approximately **567 ms** was a single four-field CPU call,
+excluding model loading. It was not a warmed p50 or p95. Our paired benchmark
+measures first-call latency separately, warms the model, and compares C++ with
+Python using identical inputs, weights and ONNX Runtime versions.
+
+Local i7-10700K CPU, default ORT threads, 30 warmed requests:
+
+| Implementation | 1 field p50 / p95 | 4 fields p50 / p95 |
+|---|---:|---:|
+| JevT++ / ONNX Runtime | 139 / 151 ms | 565 / 605 ms |
+| Paired Python / ONNX Runtime | 138 / 145 ms | 584 / 631 ms |
+
+These shared-workstation measurements show similar inference latency, not a
+general C++ speed advantage. The current CPU path does not meet a sub-100 ms
+target on this workload.
+
+A separate **Python + CUDA experiment** on an RTX 4090 reached **14.1 ms p50 /
+15.7 ms p95** for the same four-field fixture. This shows GPU headroom, **not
+GPU support in the current JevT++ adapter**. See the report for numerical parity
+and hardware/runtime details; this is not a quality comparison with Jev.
+
+See [measurements, methodology and reproduction](docs/PERFORMANCE.md) for the
+local results and separately attributed Jev/GPU measurements. The keyword
+backend benchmark measures library overhead; it does not measure Laya speed.
 
 ## Build and test
 

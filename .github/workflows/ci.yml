@@ -47,11 +47,11 @@ jobs:
         run: >-
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DJEVT_BUILD_TESTS=OFF
+          -DJEVT_BUILD_TESTS=ON
           -DJEVT_BUILD_EXAMPLES=OFF
           -DJEVT_BUILD_BENCHMARKS=ON
       - name: Build benchmarks
         run: cmake --build build
       - name: Run short benchmark gate
-        run: ctest --test-dir build -L benchmark-smoke --output-on-failure
+        run: ctest --test-dir build -L benchmark-smoke --output-on-failure --no-tests=error
 

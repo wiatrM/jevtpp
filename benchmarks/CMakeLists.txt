@@ -14,6 +14,12 @@ if(JEVT_BUILD_TESTS)
   set_tests_properties(jevt_benchmark_smoke PROPERTIES LABELS "benchmark-smoke")
 endif()
 
+if(JEVT_ENABLE_LAYA)
+  add_executable(jevt_laya_latency laya_latency.cpp)
+  target_link_libraries(jevt_laya_latency PRIVATE jevt::laya)
+  target_compile_features(jevt_laya_latency PRIVATE cxx_std_20)
+endif()
+
 if(JEVT_ENABLE_LAYA AND JEVT_LAYA_MODEL_DIR)
   add_executable(jevt_laya_quality laya_quality.cpp)
   target_link_libraries(jevt_laya_quality PRIVATE jevt::laya)
