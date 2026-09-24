@@ -1,0 +1,15 @@
+find_package(Threads REQUIRED)
+
+function(jevt_add_test target source)
+  add_executable(${target} ${source})
+  target_link_libraries(${target} PRIVATE jevt::jevt Threads::Threads)
+  target_compile_features(${target} PRIVATE cxx_std_20)
+  add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+jevt_add_test(jevt_acceptance_tests acceptance_test.cpp)
+jevt_add_test(jevt_diagnostics_tests diagnostics_test.cpp)
+jevt_add_test(jevt_compile_success_tests compile_success_test.cpp)
+if(JEVT_ENABLE_HTTP)
+  jevt_add_test(jevt_http_tests http_server_test.cpp)
+endif()

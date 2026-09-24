@@ -1,0 +1,42 @@
+# CMake and native build output
+/build*/
+/out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+
+# Package managers
+/.conan/
+/.conan2/
+/vcpkg_installed/
+__pycache__/
+*.py[cod]
+
+# IDEs and operating systems
+.idea/
+.vs/
+.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Benchmark and coverage artefacts
+/benchmark-results/
+/coverage/
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+

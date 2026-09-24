@@ -1,0 +1,4 @@
+add_executable(jevt_support_routing support_routing.cpp)
+target_link_libraries(jevt_support_routing PRIVATE jevt::jevt)
+target_compile_features(jevt_support_routing PRIVATE cxx_std_20)
+
