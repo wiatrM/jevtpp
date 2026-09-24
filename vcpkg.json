@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "jevtpp",
-  "version-semver": "0.1.0",
+  "version-semver": "0.2.0",
   "description": "A C++20 event matching, routing and evaluation library with observable decisions.",
   "homepage": "https://github.com/wiatrm/jevtpp",
   "license": "MIT",

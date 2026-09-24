@@ -2,6 +2,7 @@
 
 #include "jevt/core.hpp"
 #include "jevt/runtime.hpp"
+#include "jevt/system_one.hpp"
 
 #if __has_include("jevt/diagnostics.hpp")
 #include "jevt/diagnostics.hpp"

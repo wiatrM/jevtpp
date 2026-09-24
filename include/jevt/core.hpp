@@ -124,10 +124,12 @@ private:
 };
 
 struct inference_request {
+    enum class kind : std::uint8_t { choice, noul, score };
     std::string_view decision_id;
     std::string_view question;
     std::string_view input;
     std::span<const std::string_view> options;
+    kind question_kind = kind::choice;
 };
 
 struct inference_response {
@@ -139,6 +141,17 @@ class backend {
 public:
     virtual ~backend() = default;
     [[nodiscard]] virtual result<inference_response> predict(const inference_request&) = 0;
+    [[nodiscard]] virtual result<std::vector<inference_response>> predict_batch(
+        std::span<const inference_request> requests) {
+        std::vector<inference_response> responses;
+        responses.reserve(requests.size());
+        for (const auto& request : requests) {
+            auto response = predict(request);
+            if (!response) return response.error_value();
+            responses.push_back(std::move(response).value());
+        }
+        return responses;
+    }
     [[nodiscard]] virtual std::string_view name() const noexcept = 0;
 };
 

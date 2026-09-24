@@ -2,6 +2,7 @@
 
 #include "jevt/core.hpp"
 #include "jevt/diagnostics.hpp"
+#include "jevt/system_one.hpp"
 
 #include <chrono>
 #include <future>
@@ -90,7 +91,8 @@ public:
                 std::chrono::steady_clock::now() - started, diagnostic_tag);
         };
         constexpr std::array<std::string_view, 2> options{"false", "true"};
-        const inference_request request{predicate_definition<Id>::name(), definition_.question, input, options};
+        const inference_request request{predicate_definition<Id>::name(), definition_.question, input,
+                                        options, inference_request::kind::noul};
         auto response = backend_->predict(request);
         if (!response) { record(CallOutcome::error); return response.error_value(); }
         if (response->scores.size() != 2) { record(CallOutcome::error); return error{error_code::invalid_backend_output, "predicate backend must return two scores"}; }
@@ -130,6 +132,11 @@ public:
         const float threshold = options.abstain_threshold >= 0.0F ? options.abstain_threshold : threshold_;
         return {definition, std::move(selected_backend), threshold, diagnostics_};
     }
+    template <class Model>
+    [[nodiscard]] bound_system_one<Model> bind_system_one(Model model) const {
+        if (!backend_) throw std::invalid_argument("jevt context has no backend");
+        return {std::move(model), backend_, diagnostics_};
+    }
 private:
     std::shared_ptr<backend> backend_;
     float threshold_;
@@ -156,6 +163,13 @@ template <class Definition>
     auto current = default_context();
     if (!current) throw std::runtime_error("jevt::init must be called before jevt::bind");
     return current->bind(std::move(definition), std::move(options));
+}
+
+template <class Model>
+[[nodiscard]] auto bind_system_one(Model model) {
+    auto current = default_context();
+    if (!current) throw std::runtime_error("jevt::init must be called before jevt::bind_system_one");
+    return current->bind_system_one(std::move(model));
 }
 
 class keyword_backend final : public backend {
