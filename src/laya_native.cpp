@@ -178,10 +178,12 @@ struct laya_native_backend::impl {
     }
     result<std::vector<inference_response>> predict_batch(std::span<const inference_request> requests) {
         if (requests.empty()) return std::vector<inference_response>{};
+        for (const auto& request : requests) if (auto failure = execution_error(request)) return *failure;
         if (requests.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) / max_len)
             return error{error_code::invalid_request, "native batch dimensions exceed int limits"};
         std::lock_guard lock(mutex);
         try {
+            for (const auto& request : requests) if (auto failure = execution_error(request)) return *failure;
             std::vector<inference_response> responses(requests.size());
             std::vector<std::size_t> rows;
             std::vector<std::vector<std::int32_t>> sequences, markers;
@@ -198,14 +200,19 @@ struct laya_native_backend::impl {
                 if (type == 1 && (request.options.size() < 2 || request.options.size() > 10))
                     throw std::invalid_argument("native score requires 2 through 10 levels");
                 responses[index].model_id = options.model_id;
+                responses[index].metadata.provider = "laya.cpp";
                 // A one-option softmax is exactly one; upstream requires two
                 // active markers, so omit this row without changing ordering.
                 if (type == 0 && request.options.size() == 1) {
                     responses[index].scores = {1.0F};
+                    responses[index].metadata.usage = std::make_shared<const token_usage>();
                     continue;
                 }
                 std::vector<std::string> labels;
-                if (type == 2) labels = {"false: no, the statement does not hold", "true: yes, the statement holds"};
+                if (type == 2) {
+                    const auto descriptions = local_noul_criteria(request);
+                    labels.assign(descriptions.begin(), descriptions.end());
+                }
                 else for (std::size_t i = 0; i < request.options.size(); ++i) {
                     auto text = request.options[i].empty() ? "option " + std::to_string(i) : std::string(request.options[i]);
                     if (type == 1) text = "level " + std::to_string(i) + ": " + text;
@@ -224,6 +231,7 @@ struct laya_native_backend::impl {
                 sequence.insert(sequence.end(), state->second.begin(), state->second.begin() + std::min(room, state->second.size()));
                 sequence.push_back(sep_id);
                 if (sequence.size() > max_len) sequence.resize(max_len);
+                responses[index].metadata.usage = std::make_shared<const token_usage>(token_usage{sequence.size(), 0});
                 batch.length = std::max(batch.length, static_cast<int>(sequence.size()));
                 batch.options = std::max(batch.options, static_cast<int>(labels.size()));
                 batch.lengths.push_back(static_cast<std::int32_t>(sequence.size()));
@@ -253,7 +261,9 @@ struct laya_native_backend::impl {
                     batch.markers[row * batch.options + col] = row * batch.length +
                         (col < batch.counts[row] ? markers[row][col] : 0);
             }
+            for (const auto& request : requests) if (auto failure = execution_error(request)) return *failure;
             const auto raw = model.forward(batch);
+            for (const auto& request : requests) if (auto failure = execution_error(request)) return *failure;
             if (raw.logits.size() != static_cast<std::size_t>(batch.size) * batch.options)
                 return error{error_code::invalid_backend_output, "native logits have unexpected shape"};
             for (int row = 0; row < batch.size; ++row) {

@@ -9,6 +9,7 @@ const references = {
   observability: 'docs/OBSERVABILITY.md', performance: 'docs/PERFORMANCE.md',
   architecture: 'docs/ARCHITECTURE.md',
   batching: 'docs/BATCHING.md', precision: 'docs/PRECISION.md',
+  remote: 'docs/REMOTE.md', asio: 'docs/ASIO.md', testing: 'docs/TESTING.md',
 };
 const config = JSON.parse(await readFile(path.join(root, 'docs.json'), 'utf8'));
 const pages = config.navigation.groups.flatMap(group => group.pages);

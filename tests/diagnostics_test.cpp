@@ -236,6 +236,24 @@ JEVT_TEST("overflow percentiles use the observed maximum and reset with the wind
     check(decision_named(snapshot, "tail").stats, 1100.0);
 }
 
+JEVT_TEST("token usage remains exact without traces and is exported and reset") {
+    jevt::DiagnosticsOptions options;
+    options.recent_sample_every = 0;
+    jevt::Diagnostics diagnostics(options);
+    diagnostics.record_call("usage", jevt::CallOutcome::success, 1ms, std::nullopt, {123, 7});
+    diagnostics.record_call("usage", jevt::CallOutcome::success, 1ms, std::nullopt, {10, 2});
+    const auto snapshot = diagnostics.snapshot();
+    JEVT_REQUIRE_EQ(snapshot.total.input_tokens, 133u);
+    JEVT_REQUIRE_EQ(snapshot.total.output_tokens, 9u);
+    JEVT_REQUIRE_EQ(snapshot.decisions.front().stats.input_tokens, 133u);
+    JEVT_REQUIRE(snapshot.recent_calls.empty());
+    JEVT_REQUIRE(diagnostics.to_json().find("\"input_tokens\":133") != std::string::npos);
+    JEVT_REQUIRE(diagnostics.to_prometheus().find("jevt_output_tokens_total 9") != std::string::npos);
+    diagnostics.reset();
+    JEVT_REQUIRE_EQ(diagnostics.snapshot().total.input_tokens, 0u);
+    JEVT_REQUIRE_EQ(diagnostics.snapshot().total.output_tokens, 0u);
+}
+
 int main() {
     return jevt::test::run_all("diagnostics");
 }

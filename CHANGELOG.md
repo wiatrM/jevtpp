@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Default tests, benchmarks and examples to off when embedded in another CMake
+  project, while preserving explicitly supplied options.
 - Reject negative/non-finite predicate scores and overflowing choice totals.
 - Validate binding thresholds: `-1` inherits the context threshold; all other
   values must be finite and between zero and one.
@@ -18,6 +20,11 @@
 
 ### Added
 
+- Optional remote backend with injected HTTP transports, default libcurl
+  transport, bounded retries/timeouts and local mock/loopback integration tests.
+- Optional Boost.Asio completion-token and coroutine adapter over bounded
+  workers; request stop tokens and deadlines; scripted/recording test backend.
+- Request/model metadata and token-usage propagation through typed evaluations.
 - Optional pinned `laya.cpp`/ggml backend: CPU strict FP32 and explicit CUDA
   optimized FP32, native graph reuse, bounded schema cache and shared-context
   tokenization under the existing typed API. Safetensors downloads verify SHA-256.
@@ -37,8 +44,8 @@
 - Exact metrics with sampled recent traces; diagnostics contention and concurrent
   Laya load benchmarks; opt-in FP16/INT8 conversion and quality/parity gates.
 
-No Asio adapter or coroutine API is provided. The ONNX adapter does not provide
-a persistent CUDA device-buffer pool or CUDA Graph replay; the optional native
+Running local model inference cannot be forcibly cancelled. The ONNX adapter
+does not provide a persistent CUDA device-buffer pool or CUDA Graph replay; the optional native
 backend uses ggml's graph/allocation reuse. Precision candidates are not enabled
 by default.
 

@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>Application context in. Typed decisions out.</strong><br>
-  A C++20 library for local model-backed routing, classification and scoring.
+  A C++20 library for typed model-backed routing, classification and scoring.
 </p>
 
 <p align="center">
@@ -17,6 +17,7 @@ JevT++ turns runtime text, JSON or application objects into enums, boolean
 decisions and scores your code can use directly. Define the available answers
 and their meaning once; supply new context on every call. Optional Laya
 backends run inference inside your process with ONNX Runtime or native ggml.
+An opt-in remote backend uses the same typed API with hosted inference.
 
 - **Typed vocabulary:** compile-time schemas, enum rubrics and explicit abstention.
 - **Shared context:** evaluate several independent fields in one Laya batch.
@@ -25,7 +26,7 @@ backends run inference inside your process with ONNX Runtime or native ggml.
 - **Small core:** no Python runtime, JSON library or ONNX dependency unless you enable the adapter.
 
 [Documentation](https://wiatrm.github.io/jevtpp/) · [Quick start](#build-and-test) · [System One API](docs/SYSTEM_ONE.md) ·
-[ONNX setup](docs/LAYA.md) · [Native CPU/CUDA](docs/NATIVE.md) · [Performance](docs/PERFORMANCE.md) ·
+[ONNX setup](docs/LAYA.md) · [Native CPU/CUDA](docs/NATIVE.md) · [Remote](docs/REMOTE.md) · [Performance](docs/PERFORMANCE.md) ·
 [Runnable demo](examples/laya_routing_demo.cpp)
 
 JevT++ is an independent open-source library. It is not the proprietary Jev
@@ -81,8 +82,8 @@ The input is owned once and shared across the questions. For an application
 object, use `brain.evaluate(record, serializer)` with a serializer returning
 `jevt::json_state(...)` or `jevt::text_state(...)`; it runs once per evaluation.
 An ADL `to_jevt_state(const Record&)` customization is also supported. No JSON
-library is required by JevT++, and JSON syntax validation belongs to your
-serializer.
+library is required by the core, and JSON syntax validation belongs to your
+serializer. The optional remote module parses structured payloads before sending them.
 
 | Field | Result | Example |
 |---|---|---|
@@ -125,7 +126,7 @@ abstention and exhaustive typed dispatch handling.
 
 | Project | Execution | What it offers |
 |---|---|---|
-| **JevT++** | In-process C++20; ONNX Runtime CPU or explicit CUDA | Compile-time enum schemas, typed field access, bounded batching, abstention and diagnostics |
+| **JevT++** | In-process ONNX/ggml CPU or CUDA; optional remote HTTP | Compile-time enum schemas, typed field access, bounded batching, abstention and diagnostics |
 | [Laya Python](https://github.com/NandhaKishorM/laya) | Local model runtime with CPU/GPU paths | Upstream model tooling and Python integration |
 | [Receptron Laya](https://github.com/receptron/laya) | Node.js/TypeScript + ONNX Runtime | Typed System One calls in JavaScript applications |
 | [laya.cpp](https://github.com/lkarlslund/laya.cpp) | Native C++ with ggml, CUDA/Vulkan/Core ML | Hardware-specific inference, CLI and Jev-compatible serving |
@@ -133,14 +134,17 @@ abstention and exhaustive typed dispatch handling.
 
 Choose JevT++ when decisions belong inside an existing C++ application and
 you want local inference with application-owned types. Current `main` supports
-CPU/CUDA selection; there is no built-in hosted Jev client.
+CPU/CUDA selection and an optional [hosted backend](docs/REMOTE.md).
 Using C++ alone does not make the same ONNX model faster than Python: the
 native inference engine does most of the work in both cases.
 
 `choose_async()` remains a `std::async` convenience. The optional
 [batching backend](docs/BATCHING.md) adds bounded workers, microbatching and
-owned future submission. Neither is a coroutine API. There is no shipped Asio
-adapter or cancellation API. See [concurrency and service integration](https://wiatrm.github.io/jevtpp/concurrency/).
+owned future submission. The optional [Boost.Asio adapter](docs/ASIO.md) supports
+completion tokens and `co_await`; request deadlines and stop tokens are checked
+by the queue and supported transports. They cannot interrupt arbitrary running
+local inference. [Scripted test backends](docs/TESTING.md) exercise application
+behavior without model downloads or paid API calls.
 
 ## Performance
 
@@ -206,11 +210,15 @@ Useful options:
 
 | Option | Default | Purpose |
 |---|---:|---|
-| `JEVT_BUILD_TESTS` | `ON` | Acceptance and unit tests |
-| `JEVT_BUILD_EXAMPLES` | `ON` | Runnable examples |
-| `JEVT_BUILD_BENCHMARKS` | `ON` | Benchmarks and load scenarios |
+| `JEVT_BUILD_TESTS` | Top-level only | Acceptance and unit tests |
+| `JEVT_BUILD_EXAMPLES` | Top-level only | Runnable examples |
+| `JEVT_BUILD_BENCHMARKS` | Top-level only | Benchmarks and load scenarios |
 | `JEVT_ENABLE_HTTP` | `ON` | Optional HTTP diagnostics service |
 | `JEVT_ENABLE_LAYA` | `OFF` | Native Laya inference with ONNX Runtime |
+| `JEVT_ENABLE_LAYA_NATIVE` | `OFF` | Safetensors/ggml native inference |
+| `JEVT_ENABLE_REMOTE` | `OFF` | Hosted HTTP backend, `jevt::remote` |
+| `JEVT_REMOTE_CURL` | `ON` when remote is enabled | Default libcurl transport; disable to inject your own |
+| `JEVT_ENABLE_ASIO` | `OFF` | Boost 1.74+ integration, `jevt::asio` |
 | `JEVT_FETCH_TOKENIZERS_CPP` | `ON` | Fetch pinned tokenizer dependency when building Laya |
 
 To run the real multilingual model, fetch the pinned bundle and build the
@@ -245,6 +253,18 @@ target_compile_features(my_service PRIVATE cxx_std_20)
 
 The package is relocatable; consumers do not need to copy headers or depend
 on the JevT++ source tree.
+
+Embedding a checkout also works:
+
+```cmake
+add_subdirectory(external/jevtpp)
+target_link_libraries(my_service PRIVATE jevt::jevt)
+```
+
+When embedded with `add_subdirectory()` or `FetchContent`, tests, examples and
+benchmarks default to `OFF`. Explicit `JEVT_BUILD_*` settings are preserved.
+Optional integrations remain opt-in; link `jevt::remote` or `jevt::asio` only
+when that module was enabled in the library build.
 
 ### Conan 2
 

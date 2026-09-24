@@ -34,15 +34,22 @@ public:
           question_(std::move(question)), diagnostics_(std::move(diagnostics)) {}
 
     [[nodiscard]] result<decision_result<Schema>> choose(
-        std::string_view input, std::optional<std::string_view> diagnostic_tag = std::nullopt) const {
+        std::string_view input, std::optional<std::string_view> diagnostic_tag = std::nullopt,
+        evaluation_options execution = {}, content_kind input_kind = content_kind::text) const {
         const auto started = std::chrono::steady_clock::now();
+        token_usage usage;
         const auto record = [&](CallOutcome outcome) {
             if (diagnostics_) diagnostics_->record_call(
-                Schema::name(), outcome, std::chrono::steady_clock::now() - started, diagnostic_tag);
+                Schema::name(), outcome, std::chrono::steady_clock::now() - started, diagnostic_tag, usage);
         };
-        const inference_request request{Schema::name(), question_, input, schema_.descriptions()};
+        if (auto failure = execution_error(execution)) { record(CallOutcome::error); return *failure; }
+        const inference_request request{Schema::name(), question_, input, schema_.descriptions(),
+            inference_request::kind::choice, input_kind, text_metadata(question_), schema_.criteria_metadata(),
+            execution.deadline, execution.cancellation};
         auto response = backend_->predict(request);
         if (!response) { record(CallOutcome::error); return response.error_value(); }
+        if (response->metadata.usage) usage = *response->metadata.usage;
+        if (auto failure = execution_error(execution)) { record(CallOutcome::error); return *failure; }
         auto scores = std::move(response).value().scores;
         if (scores.size() != Schema::size || scores.empty()) {
             record(CallOutcome::error);
@@ -52,7 +59,9 @@ public:
             record(CallOutcome::error);
             return error{error_code::invalid_backend_output, "backend returned a negative or non-finite score"};
         }
-        const auto best = static_cast<std::size_t>(std::distance(scores.begin(), std::max_element(scores.begin(), scores.end())));
+        auto best = static_cast<std::size_t>(std::distance(scores.begin(), std::max_element(scores.begin(), scores.end())));
+        if (response->metadata.provider_choice_index && *response->metadata.provider_choice_index < scores.size() &&
+            scores[*response->metadata.provider_choice_index] == scores[best]) best = *response->metadata.provider_choice_index;
         const auto total = std::accumulate(scores.begin(), scores.end(), 0.0F);
         if (!(total > 0.0F) || !std::isfinite(total)) { record(CallOutcome::error); return error{error_code::invalid_backend_output, "backend returned an invalid score total"}; }
         for (auto& score : scores) score /= total;
@@ -62,11 +71,16 @@ public:
         if (confidence >= threshold_) selected = values[best];
         record(selected ? CallOutcome::success : CallOutcome::abstain);
         return decision_result<Schema>{selected, std::move(scores),
-            decision_metadata{response->model_id, confidence, !selected.has_value()}};
+            decision_metadata{response->model_id, confidence, !selected.has_value(), std::move(response->metadata)}};
     }
 
-    [[nodiscard]] std::future<result<decision_result<Schema>>> choose_async(std::string input) const {
-        return std::async(std::launch::async, [self = *this, input = std::move(input)] { return self.choose(input); });
+    [[nodiscard]] result<decision_result<Schema>> choose(
+        state_value input, std::optional<std::string_view> tag = std::nullopt, evaluation_options execution = {}) const {
+        return choose(input.content, tag, std::move(execution), input.kind);
+    }
+
+    [[nodiscard]] std::future<result<decision_result<Schema>>> choose_async(std::string input, evaluation_options execution = {}) const {
+        return std::async(std::launch::async, [self = *this, input = std::move(input), execution] { return self.choose(input, std::nullopt, execution); });
     }
 private:
     Schema schema_;
@@ -83,18 +97,24 @@ public:
                     std::shared_ptr<Diagnostics> diagnostics)
         : definition_(definition), backend_(std::move(backend)), threshold_(threshold), diagnostics_(std::move(diagnostics)) {}
     [[nodiscard]] result<predicate_result<Id>> evaluate(
-        std::string_view input, std::optional<std::string_view> diagnostic_tag = std::nullopt) const {
+        std::string_view input, std::optional<std::string_view> diagnostic_tag = std::nullopt,
+        evaluation_options execution = {}, content_kind input_kind = content_kind::text) const {
         const auto started = std::chrono::steady_clock::now();
+        token_usage usage;
         const auto record = [&](CallOutcome outcome) {
             if (diagnostics_) diagnostics_->record_call(
                 predicate_definition<Id>::name(), outcome,
-                std::chrono::steady_clock::now() - started, diagnostic_tag);
+                std::chrono::steady_clock::now() - started, diagnostic_tag, usage);
         };
+        if (auto failure = execution_error(execution)) { record(CallOutcome::error); return *failure; }
         constexpr std::array<std::string_view, 2> options{"false", "true"};
         const inference_request request{predicate_definition<Id>::name(), definition_.question, input,
-                                        options, inference_request::kind::noul};
+                                        options, inference_request::kind::noul, input_kind,
+                                        text_metadata(definition_.question), {}, execution.deadline, execution.cancellation};
         auto response = backend_->predict(request);
         if (!response) { record(CallOutcome::error); return response.error_value(); }
+        if (response->metadata.usage) usage = *response->metadata.usage;
+        if (auto failure = execution_error(execution)) { record(CallOutcome::error); return *failure; }
         if (response->scores.size() != 2) { record(CallOutcome::error); return error{error_code::invalid_backend_output, "predicate backend must return two scores"}; }
         if (std::any_of(response->scores.begin(), response->scores.end(),
                         [](float value) { return !std::isfinite(value) || value < 0.0F; })) {
@@ -110,7 +130,11 @@ public:
         const auto selected = confidence >= threshold_ ? std::optional<bool>{value} : std::nullopt;
         record(selected ? CallOutcome::success : CallOutcome::abstain);
         return predicate_result<Id>{selected,
-                                    confidence, response->model_id};
+                                    confidence, response->model_id, std::move(response->metadata)};
+    }
+    [[nodiscard]] result<predicate_result<Id>> evaluate(
+        state_value input, std::optional<std::string_view> tag = std::nullopt, evaluation_options execution = {}) const {
+        return evaluate(input.content, tag, std::move(execution), input.kind);
     }
 private:
     predicate_definition<Id> definition_;

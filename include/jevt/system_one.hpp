@@ -12,7 +12,7 @@ namespace jevt {
 // JSON is supplied by the application's serializer. No JSON library is imposed.
 // content_kind describes the serialization; it does not claim JSON validation.
 struct state_value {
-    enum class content_kind { text, json };
+    using content_kind = jevt::content_kind;
     std::string content;
     content_kind kind = content_kind::text;
 };
@@ -45,6 +45,7 @@ struct enum_field_definition {
     std::string_view description;
     Schema criteria;
     float abstain_threshold;
+    content_view instructions{};
 };
 
 template <fixed_string Name, field_kind Kind>
@@ -54,6 +55,8 @@ struct binary_field_definition {
     static constexpr std::size_t size = 2;
     std::string_view description;
     noul_policy policy;
+    content_view instructions{};
+    std::array<content_view, 2> criteria_metadata{}; // false, true
 };
 
 namespace system_one_detail {
@@ -97,7 +100,7 @@ template <fixed_string Name, class Schema>
     system_one_detail::validate_description(Name.view(), description);
     if (!system_one_detail::unit_interval(abstain_threshold)) throw "invalid Choice confidence threshold";
     for (const auto item : criteria.descriptions()) if (item.empty()) throw "empty Choice criterion";
-    return enum_field_definition<Name, field_kind::choice, Schema>{description, criteria, abstain_threshold};
+    return enum_field_definition<Name, field_kind::choice, Schema>{description, criteria, abstain_threshold, text_metadata(description)};
 }
 
 template <fixed_string Name, class Schema>
@@ -108,7 +111,7 @@ template <fixed_string Name, class Schema>
     system_one_detail::validate_description(Name.view(), description);
     if (!system_one_detail::unit_interval(abstain_threshold)) throw "invalid Score confidence threshold";
     for (const auto item : criteria.descriptions()) if (item.empty()) throw "empty Score criterion";
-    return enum_field_definition<Name, field_kind::score, Schema>{description, criteria, abstain_threshold};
+    return enum_field_definition<Name, field_kind::score, Schema>{description, criteria, abstain_threshold, text_metadata(description)};
 }
 
 template <fixed_string Name>
@@ -117,7 +120,7 @@ template <fixed_string Name>
     if (!system_one_detail::unit_interval(policy.false_threshold) ||
         !system_one_detail::unit_interval(policy.true_threshold) ||
         policy.false_threshold > policy.true_threshold) throw "invalid Noul thresholds";
-    return binary_field_definition<Name, field_kind::noul>{description, policy};
+    return binary_field_definition<Name, field_kind::noul>{description, policy, text_metadata(description)};
 }
 
 // Explicit probability semantics: the description must be a true/false
@@ -125,7 +128,55 @@ template <fixed_string Name>
 template <fixed_string Name>
 [[nodiscard]] consteval auto probability(std::string_view proposition) {
     system_one_detail::validate_description(Name.view(), proposition);
-    return binary_field_definition<Name, field_kind::probability>{proposition, {}};
+    return binary_field_definition<Name, field_kind::probability>{proposition, {}, text_metadata(proposition)};
+}
+
+template <fixed_string Name, class Schema>
+[[nodiscard]] consteval auto choice(content_view instructions, Schema criteria, float threshold = 0.0F) {
+    auto field = choice<Name>(instructions.content, criteria, threshold);
+    field.instructions = instructions;
+    return field;
+}
+template <fixed_string Name, class Schema>
+[[nodiscard]] consteval auto score(content_view instructions, Schema criteria, float threshold = 0.0F) {
+    auto field = score<Name>(instructions.content, criteria, threshold);
+    field.instructions = instructions;
+    return field;
+}
+template <fixed_string Name>
+[[nodiscard]] consteval auto noul(content_view instructions, noul_policy policy = {}) {
+    auto field = noul<Name>(instructions.content, policy);
+    field.instructions = instructions;
+    return field;
+}
+template <fixed_string Name>
+[[nodiscard]] consteval auto noul(content_view instructions, content_view false_description,
+                                 content_view true_description, noul_policy policy = {}) {
+    auto field = noul<Name>(instructions, policy);
+    if (false_description.content.empty() || true_description.content.empty()) throw "Noul criteria must not be empty";
+    field.criteria_metadata = {false_description, true_description};
+    return field;
+}
+template <fixed_string Name>
+[[nodiscard]] consteval auto noul(std::string_view instructions, std::string_view false_description,
+                                 std::string_view true_description, noul_policy policy = {}) {
+    return noul<Name>(text_metadata(instructions), text_metadata(false_description), text_metadata(true_description), policy);
+}
+template <fixed_string Name>
+[[nodiscard]] consteval auto probability(content_view instructions) {
+    auto field = probability<Name>(instructions.content);
+    field.instructions = instructions;
+    return field;
+}
+template <fixed_string Name>
+[[nodiscard]] consteval auto noul(std::string_view instructions, content_view false_description,
+                                 content_view true_description, noul_policy policy = {}) {
+    return noul<Name>(text_metadata(instructions), false_description, true_description, policy);
+}
+template <fixed_string Name>
+[[nodiscard]] consteval auto noul(content_view instructions, std::string_view false_description,
+                                 std::string_view true_description, noul_policy policy = {}) {
+    return noul<Name>(instructions, text_metadata(false_description), text_metadata(true_description), policy);
 }
 
 template <fixed_string Id, class... Fields>
@@ -137,39 +188,73 @@ struct decision_model_definition {
     static constexpr std::size_t size = sizeof...(Fields);
     std::string_view description;
     std::tuple<Fields...> fields;
+    content_view instructions{};
 };
 
 template <fixed_string Id, class... Fields>
 [[nodiscard]] consteval auto decision_model(std::string_view description, Fields... fields) {
     system_one_detail::validate_description(Id.view(), description);
-    return decision_model_definition<Id, Fields...>{description, std::tuple{fields...}};
+    return decision_model_definition<Id, Fields...>{description, std::tuple{fields...}, text_metadata(description)};
+}
+template <fixed_string Id, class... Fields>
+[[nodiscard]] consteval auto decision_model(content_view instructions, Fields... fields) {
+    auto model = decision_model<Id>(instructions.content, fields...);
+    model.instructions = instructions;
+    return model;
+}
+
+namespace system_one_detail {
+inline std::string json_content(content_view value) {
+    if (value.kind == content_kind::json) return std::string(value.content);
+    std::string output = "\"";
+    constexpr char hex[] = "0123456789abcdef";
+    for (unsigned char c : value.content) {
+        if (c == '"' || c == '\\') { output += '\\'; output += static_cast<char>(c); }
+        else if (c < 0x20) { output += "\\u00"; output += hex[c >> 4]; output += hex[c & 15]; }
+        else output += static_cast<char>(c);
+    }
+    return output + '"';
+}
 }
 
 // Owns every string. views() deliberately rebuilds views after a copy/move.
 // Views are valid until the owner is moved, mutated or destroyed.
 struct system_one_request {
+    struct owned_content {
+        std::string content;
+        content_kind kind = content_kind::text;
+    };
     struct field {
         std::string id;
         std::string description;
         std::string question;
         std::vector<std::string> criteria;
         inference_request::kind kind;
+        owned_content instructions;
+        std::vector<owned_content> criteria_metadata;
     };
     std::string decision_id;
     std::string description;
     state_value state;
     std::vector<field> fields;
+    evaluation_options execution{};
 
     class request_views {
     public:
         explicit request_views(const system_one_request& owner) {
             criteria_.reserve(owner.fields.size());
+            metadata_.reserve(owner.fields.size());
             requests_.reserve(owner.fields.size());
             for (const auto& field : owner.fields) {
                 auto& options = criteria_.emplace_back();
                 options.reserve(field.criteria.size());
                 for (const auto& criterion : field.criteria) options.emplace_back(criterion);
-                requests_.push_back({field.id, field.question, owner.state.content, options, field.kind});
+                auto& metadata = metadata_.emplace_back();
+                metadata.reserve(field.criteria_metadata.size());
+                for (const auto& criterion : field.criteria_metadata) metadata.push_back({criterion.content, criterion.kind});
+                requests_.push_back({field.id, field.question, owner.state.content, options, field.kind,
+                    owner.state.kind, {field.instructions.content, field.instructions.kind}, metadata,
+                    owner.execution.deadline, owner.execution.cancellation});
             }
         }
         request_views(const request_views&) = delete;
@@ -179,6 +264,7 @@ struct system_one_request {
         [[nodiscard]] std::span<const inference_request> requests() const noexcept { return requests_; }
     private:
         std::vector<std::vector<std::string_view>> criteria_;
+        std::vector<std::vector<content_view>> metadata_;
         std::vector<inference_request> requests_;
     };
     [[nodiscard]] request_views views() const & { return request_views{*this}; }
@@ -187,9 +273,10 @@ struct system_one_request {
 
 template <fixed_string Id, class... Fields>
 [[nodiscard]] system_one_request make_system_one_request(
-    const decision_model_definition<Id, Fields...>& model, state_value state) {
+    const decision_model_definition<Id, Fields...>& model, state_value state, evaluation_options execution = {}) {
     system_one_request output{std::string{Id.view()}, std::string{model.description}, std::move(state), {}};
     output.fields.reserve(sizeof...(Fields));
+    output.execution = std::move(execution);
     std::apply([&](const auto&... field) {
         ([&] {
             using F = std::remove_cvref_t<decltype(field)>;
@@ -197,12 +284,25 @@ template <fixed_string Id, class... Fields>
             item.id = std::string{Id.view()} + "." + std::string{F::name.view()};
             item.description = field.description;
             item.question = std::string{model.description} + "\n\n" + std::string{field.description};
+            const auto model_metadata = model.instructions.content.empty() ? text_metadata(model.description) : model.instructions;
+            const auto field_metadata = field.instructions.content.empty() ? text_metadata(field.description) : field.instructions;
+            if (model_metadata.kind == content_kind::text && field_metadata.kind == content_kind::text)
+                item.instructions = {item.question, content_kind::text};
+            else item.instructions = {"{\"model\":" + system_one_detail::json_content(model_metadata) +
+                                      ",\"field\":" + system_one_detail::json_content(field_metadata) + "}", content_kind::json};
             if constexpr (F::kind == field_kind::choice || F::kind == field_kind::score) {
                 item.kind = F::kind == field_kind::score ? inference_request::kind::score : inference_request::kind::choice;
                 for (auto criterion : field.criteria.descriptions()) item.criteria.emplace_back(criterion);
+                for (std::size_t i = 0; i < F::size; ++i) {
+                    auto metadata = field.criteria.criteria_metadata()[i];
+                    if (metadata.content.empty()) metadata = text_metadata(field.criteria.descriptions()[i]);
+                    item.criteria_metadata.push_back({std::string(metadata.content), metadata.kind});
+                }
             } else {
                 item.kind = inference_request::kind::noul;
                 item.criteria = {"false", "true"};
+                for (const auto metadata : field.criteria_metadata)
+                    item.criteria_metadata.push_back({std::string(metadata.content), metadata.kind});
             }
             output.fields.push_back(std::move(item));
         }(), ...);
@@ -223,10 +323,15 @@ template <class Field>
 class enum_answer {
 public:
     using enum_type = typename Field::enum_type;
-    enum_answer(const Field& field, std::vector<float> probabilities, std::string model_id)
+    enum_answer(const Field& field, std::vector<float> probabilities, std::string model_id,
+                execution_metadata metadata = {})
         : probabilities_(std::move(probabilities)), model_id_(std::move(model_id)),
-          confidence_(entropy_confidence(probabilities_)) {
-        const auto index = static_cast<std::size_t>(std::max_element(probabilities_.begin(), probabilities_.end()) - probabilities_.begin());
+          confidence_(entropy_confidence(probabilities_)), metadata_(std::move(metadata)) {
+        auto index = static_cast<std::size_t>(std::max_element(probabilities_.begin(), probabilities_.end()) - probabilities_.begin());
+        if constexpr (Field::kind == field_kind::choice) {
+            if (metadata_.provider_choice_index && *metadata_.provider_choice_index < probabilities_.size() &&
+                probabilities_[*metadata_.provider_choice_index] == probabilities_[index]) index = *metadata_.provider_choice_index;
+        }
         if (confidence_ >= field.abstain_threshold) selected_ = Field::schema_type::values()[index];
         for (auto description : field.criteria.descriptions()) legend_.emplace_back(description);
         for (std::size_t i = 0; i < probabilities_.size(); ++i) score_ += static_cast<float>(i) * probabilities_[i];
@@ -243,6 +348,7 @@ public:
     [[nodiscard]] const std::vector<std::string>& legend() const noexcept { return legend_; }
     [[nodiscard]] std::string_view model_id() const noexcept { return model_id_; }
     [[nodiscard]] float score() const noexcept requires (Field::kind == field_kind::score) { return score_; }
+    [[nodiscard]] const execution_metadata& metadata() const noexcept { return metadata_; }
 private:
     std::optional<enum_type> selected_;
     std::vector<float> probabilities_;
@@ -250,13 +356,15 @@ private:
     std::string model_id_;
     float confidence_{};
     float score_{};
+    execution_metadata metadata_;
 };
 
 template <class Field>
 class binary_answer {
 public:
-    binary_answer(const Field& field, std::vector<float> probabilities, std::string model_id)
-        : probabilities_{probabilities[0], probabilities[1]}, model_id_(std::move(model_id)) {
+    binary_answer(const Field& field, std::vector<float> probabilities, std::string model_id,
+                  execution_metadata metadata = {})
+        : probabilities_{probabilities[0], probabilities[1]}, model_id_(std::move(model_id)), metadata_(std::move(metadata)) {
         if (probabilities_[1] >= field.policy.true_threshold) selected_ = true;
         else if (probabilities_[1] <= field.policy.false_threshold) selected_ = false;
     }
@@ -275,11 +383,13 @@ public:
         }
     }
     [[nodiscard]] std::string_view model_id() const noexcept { return model_id_; }
+    [[nodiscard]] const execution_metadata& metadata() const noexcept { return metadata_; }
     explicit operator bool() const = delete;
 private:
     std::optional<bool> selected_;
     std::array<float, 2> probabilities_;
     std::string model_id_;
+    execution_metadata metadata_;
 };
 
 template <class Field>
@@ -324,7 +434,7 @@ template <fixed_string... Names, fixed_string Id, class... Fields>
     using selected = decision_model_definition<Id,
         std::tuple_element_t<system_one_detail::field_index<Names, Fields...>(), tuple>...>;
     return selected{model.description,
-        std::tuple{std::get<system_one_detail::field_index<Names, Fields...>()>(model.fields)...}};
+        std::tuple{std::get<system_one_detail::field_index<Names, Fields...>()>(model.fields)...}, model.instructions};
 }
 
 template <fixed_string Id, class... Fields>
@@ -338,24 +448,36 @@ public:
           diagnostics_(std::move(diagnostics)) {
         if (!backend_) throw std::invalid_argument("System One requires a backend");
     }
-    [[nodiscard]] system_one_request request(state_value state) const {
-        return make_system_one_request(model_, std::move(state));
+    [[nodiscard]] system_one_request request(state_value state, evaluation_options execution = {}) const {
+        return make_system_one_request(model_, std::move(state), std::move(execution));
     }
     template <fixed_string... Names>
     [[nodiscard]] auto select() const {
         auto projected = select_fields<Names...>(model_);
         return bound_system_one<decltype(projected)>{std::move(projected), backend_, diagnostics_};
     }
-    [[nodiscard]] result<answer_type> evaluate(state_value state) const {
+    [[nodiscard]] result<answer_type> evaluate(state_value state, evaluation_options execution = {}) const {
         const auto started = std::chrono::steady_clock::now();
+        token_usage usage;
         const auto record = [&](CallOutcome outcome) {
             if (diagnostics_) diagnostics_->record_call(
-                Id.view(), outcome, std::chrono::steady_clock::now() - started);
+                Id.view(), outcome, std::chrono::steady_clock::now() - started, std::nullopt, usage);
         };
-        const auto batch = request(std::move(state));
+        if (auto failure = execution_error(execution)) { record(CallOutcome::error); return *failure; }
+        const auto batch = request(std::move(state), execution);
         const auto views = batch.views();
         auto responses = backend_->predict_batch(views.requests());
         if (!responses) { record(CallOutcome::error); return responses.error_value(); }
+        std::vector<const token_usage*> reports;
+        for (const auto& response : *responses) {
+            const auto* report = response.metadata.usage.get();
+            if (report && std::find(reports.begin(), reports.end(), report) == reports.end()) {
+                usage.input_tokens += report->input_tokens;
+                usage.output_tokens += report->output_tokens;
+                reports.push_back(report);
+            }
+        }
+        if (auto failure = execution_error(execution)) { record(CallOutcome::error); return *failure; }
         if (responses->size() != sizeof...(Fields)) {
             record(CallOutcome::error);
             return error{error_code::invalid_backend_output, "System One backend returned wrong number of answers"};
@@ -384,24 +506,25 @@ public:
         auto answer = [&]<std::size_t... I>(std::index_sequence<I...>) -> answer_type {
             return answer_type{typename answer_type::tuple_type{
                 field_answer<Fields>{std::get<I>(model_.fields), std::move((*responses)[I].scores),
-                                      std::move((*responses)[I].model_id)}...}};
+                                      std::move((*responses)[I].model_id), std::move((*responses)[I].metadata)}...}};
         }(std::index_sequence_for<Fields...>{});
         record(answer.abstained() ? CallOutcome::abstain : CallOutcome::success);
         return answer;
     }
-    [[nodiscard]] result<answer_type> evaluate(std::string_view state) const {
-        return evaluate(text_state(std::string{state}));
+    [[nodiscard]] result<answer_type> evaluate(std::string_view state, evaluation_options execution = {}) const {
+        return evaluate(text_state(std::string{state}), std::move(execution));
     }
     template <class T, class Serializer>
-    [[nodiscard]] result<answer_type> evaluate(const T& value, Serializer&& serializer) const {
+        requires std::invocable<Serializer, const T&>
+    [[nodiscard]] result<answer_type> evaluate(const T& value, Serializer&& serializer, evaluation_options execution = {}) const {
         static_assert(std::same_as<std::remove_cvref_t<std::invoke_result_t<Serializer, const T&>>, state_value>,
                       "state serializer must return jevt::state_value");
-        return evaluate(std::invoke(std::forward<Serializer>(serializer), value));
+        return evaluate(std::invoke(std::forward<Serializer>(serializer), value), std::move(execution));
     }
     template <class T>
         requires requires(const T& value) { { to_jevt_state(value) } -> std::same_as<state_value>; }
-    [[nodiscard]] result<answer_type> evaluate(const T& value) const {
-        return evaluate(to_jevt_state(value));
+    [[nodiscard]] result<answer_type> evaluate(const T& value, evaluation_options execution = {}) const {
+        return evaluate(to_jevt_state(value), std::move(execution));
     }
 private:
     model_type model_;

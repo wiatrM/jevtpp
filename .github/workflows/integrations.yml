@@ -1,0 +1,65 @@
+name: Optional service integrations
+
+on:
+  push:
+    branches: [main]
+    paths: ['include/**', 'src/**', 'tests/**', 'cmake/**', 'CMakeLists.txt', '.github/workflows/integrations.yml']
+  pull_request:
+    paths: ['include/**', 'src/**', 'tests/**', 'cmake/**', 'CMakeLists.txt', '.github/workflows/integrations.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  service-integrations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        curl: ['ON', 'OFF']
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libboost-dev libcurl4-openssl-dev
+      - name: Configure optional targets
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INSTALL_LIBDIR=lib -DJEVT_BUILD_TESTS=ON
+          -DJEVT_BUILD_EXAMPLES=ON -DJEVT_BUILD_BENCHMARKS=OFF
+          -DJEVT_ENABLE_REMOTE=ON -DJEVT_REMOTE_CURL=${{ matrix.curl }}
+          -DJEVT_ENABLE_ASIO=ON
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test mocks, cancellation and loopback transport
+        # No hosted API, credentials, model download or paid request is used.
+        run: ctest --test-dir build --output-on-failure --timeout 60
+      - name: Verify remote example defaults to no network request
+        if: matrix.curl == 'ON'
+        run: ./build/examples/jevt_remote_routing
+      - name: Install
+        run: cmake --install build --prefix "${RUNNER_TEMP}/jevtpp-install"
+      - name: Verify installed optional targets
+        run: |
+          cmake -S tests/optional_consumer -B installed -G Ninja -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/jevtpp-install"
+          cmake --build installed --parallel 2
+          ctest --test-dir installed --output-on-failure --timeout 30
+      - name: Verify embedded defaults
+        run: |
+          cmake -S tests/embedded_consumer -B embedded -G Ninja -DJEVT_SOURCE_DIR="${GITHUB_WORKSPACE}"
+          cmake --build embedded --parallel 2
+          ctest --test-dir embedded --output-on-failure --timeout 30
+      - name: Verify explicit options survive embedding
+        run: |
+          cmake -S tests/embedded_consumer -B embedded-explicit -G Ninja -DJEVT_SOURCE_DIR="${GITHUB_WORKSPACE}" -DJEVT_BUILD_EXAMPLES=ON -DEXPECT_JEVT_EXAMPLES=ON
+          cmake --build embedded-explicit --parallel 2
+      - name: Preserve test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs-curl-${{ matrix.curl }}
+          path: |
+            build/Testing/Temporary/LastTest.log
+            installed/Testing/Temporary/LastTest.log
+            embedded/Testing/Temporary/LastTest.log

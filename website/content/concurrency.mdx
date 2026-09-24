@@ -19,10 +19,10 @@ wrapping it in a coroutine does not make its computation asynchronous.
 | `choose_async(std::string)` | `std::async(std::launch::async)` returning `std::future` |
 | Bounded workers and microbatching | Optional `jevt::batching_backend` wrapper |
 | Queued future API | `batching_backend::submit()` owns request text and returns `std::future` |
-| Coroutine / `co_await` API | Not provided |
-| Boost.Asio / standalone Asio adapter | Not provided |
+| Coroutine / `co_await` API | Optional Boost.Asio completion-token adapter with `use_awaitable` |
+| Boost.Asio / standalone Asio adapter | Boost 1.74+ supported; standalone Asio not provided |
 | Queue admission | Configurable capacity; overload and shutdown return structured errors |
-| Deadlines and cancellation of running inference | Application responsibility; no inference cancellation API |
+| Request deadlines and cancellation | Queue preflight and supported transports honor deadline/stop token; arbitrary running local inference cannot be interrupted |
 
 Input string views only need to remain alive for the synchronous call.
 `choose_async()` instead takes an owned string and copies the bound handle,
@@ -77,22 +77,28 @@ completions and executed batches.
 waits for the wrapped backend to return and does not cancel model inference.
 Do not destroy the wrapper from one of its backend callbacks or while callers
 still access it. Recursive synchronous calls and shutdown from its own workers
-are rejected. The wrapper supplies neither coroutine support nor an Asio
-completion-token adapter.
+are rejected. The optional [Boost.Asio adapter](../../docs/ASIO.md) exposes
+the same worker pool through completion tokens without a future-waiter thread.
 
-## Integrating an Asio-based service today
+## Integrating an Asio-based service
 
-This is an integration pattern, **not a shipped adapter**:
+Enable `JEVT_ENABLE_ASIO=ON`, link `jevt::asio` and use `jevt::asio_backend`.
+Its `async_predict()` accepts a callback or `boost::asio::use_awaitable` and
+posts the result to the handler's associated executor. Input is copied before
+returning, including when a coroutine token defers initiation. See the
+[Asio guide](../../docs/ASIO.md) for compilable examples and lifetime rules.
+
+For service integration:
 
 1. Validate request size and deadline on the I/O executor.
 2. Use a bounded inference queue, such as `batching_backend`, and handle
    overload explicitly.
-3. Copy/own the input and binding, then run synchronous inference on a dedicated
-   worker executor. Do not post blocking inference back onto the I/O executor.
-4. Deliver the result on the handler's associated executor, preserving its
-   work guard and owned application state.
-5. If a request expires, suppress late delivery according to your service's
-   contract. Expiry does not stop an already-running model call.
+3. Keep blocking inference off the I/O executor; the adapter runs it on bounded
+   workers and owns the request data.
+4. Keep the associated executor and application captures alive until completion.
+5. Pass request deadline and stop token. Queue preflight rejects expired work;
+   an active local model call may still run to completion. The supplied remote
+   Curl transport also observes cancellation and deadlines during I/O.
 6. On shutdown, stop admissions and drain/join inference workers before
    destroying resources used by their completion handlers.
 
@@ -106,9 +112,10 @@ guarantees. Warmup and steady-state measurements should cover the actual shapes
 your service sends. Native ggml replay is owned by the serialized backend;
 it does not change the synchronous lifetime contract.
 
-A future Asio adapter should support completion tokens, associated
-executors/allocators, `use_awaitable`, cancellation semantics
-and shutdown tests. Those are release criteria, not existing features.
+The portable cancellation mechanism is the request's `std::stop_token`.
+Boost cancellation slots and standalone Asio are not part of this adapter's
+contract. The coroutine API yields `result<inference_response>`; an error is
+not a typed negative answer or abstention.
 
 ## Lifetime and global state
 

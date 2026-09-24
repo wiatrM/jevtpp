@@ -117,6 +117,82 @@ options must have one enum type and unique values, Score levels must be ordered
 and within the 2–10 limit, and probability thresholds must be within [0,1].
 Descriptions are string views intended for static string literals.
 
+## Structured metadata and Noul criteria
+
+Use `text_metadata(...)` or `json_metadata(...)` with `option`, `choice`,
+`score`, `probability` and `decision_model`. These constructors retain the
+existing compile-time schema checks. JSON metadata can hold an object, array
+or scalar; core does not parse it. A remote backend that consumes JSON validates
+it before sending a request. Existing string overloads retain their behavior.
+
+```cpp
+enum class Route { billing, technical };
+constexpr auto routes = jevt::schema<Route, "routes">(
+    jevt::option<Route::billing>(jevt::json_metadata(R"({"topic":"billing","examples":["refund"]})")),
+    jevt::option<Route::technical>("Technical support"));
+constexpr auto routing = jevt::decision_model<"routing">(
+    jevt::json_metadata(R"({"role":"support triage"})"),
+    jevt::choice<"route">("Select the team", routes),
+    jevt::noul<"escalate">("Escalation needed?",
+        "The request can be resolved by the support team",
+        "The request requires a human specialist"));
+```
+
+Noul's two descriptions are ordered **false, true**. Each can instead be a
+`content_view` from `text_metadata` or `json_metadata`; policy thresholds remain
+an optional final argument. Default Noul descriptions and local tokenization
+remain unchanged when custom criteria are omitted.
+
+Low-level requests preserve `input_kind`, `instructions` and
+`criteria_metadata`. When model and field instructions are both text,
+`instructions` is the existing model description, two newlines, then the field
+description. If either is JSON, it is a JSON object with `model` and `field`
+members, preserving each original JSON value or text string. Projections retain
+model instructions. The owning request copies all metadata and state.
+
+Local backends use the supplied metadata serialization verbatim as text: the
+model and field descriptions are joined with two newlines, and custom Noul
+criteria are prefixed with `false: ` and `true: `. They do not parse, reorder or
+canonicalize JSON. This makes local rendering deterministic for the supplied
+bytes while leaving structured values available to remote backends.
+
+## Execution evidence and controls
+
+Each System One field answer exposes `metadata()` with provider, model revision,
+optional token usage, optional provider confidence/score, and attempt count.
+Provider confidence does not replace `confidence()` or `entropy_confidence()`;
+provider score does not replace the computed Score expectation. A provider's
+selected Choice index is retained when it identifies a maximum-probability tie.
+Classic `choose()` answers expose this information through
+`metadata().execution`; predicate answers expose `metadata()`.
+
+**Diagnostic token totals are observed usage, not provider billing totals.**
+System One counts each shared usage report once per evaluation; distinct reports
+are summed. If a queue combines independent evaluations into one remote provider
+request, the provider's aggregate report can be observed by multiple evaluations
+and counted more than once. The library does not estimate a per-field allocation
+or retain an unbounded global history of reports to deduplicate billing.
+
+Local ONNX/native adapters report exact per-row input token counts, so their
+usage remains additive across queued evaluations. Their output token count is
+zero because inference returns probabilities rather than generated text.
+Sampling recent traces does not affect these sums; `reset()` clears them.
+Unavailable usage remains an empty pointer rather than an invented estimate.
+
+Pass `evaluation_options{.deadline = ..., .cancellation = stop_source.get_token()}`
+as the second argument to `evaluate(state, options)` or `request(state, options)`.
+Serializer overloads accept it after the serializer. Classic `choose()` and
+predicate `evaluate()` accept it after the optional diagnostic tag, and
+`choose_async()` accepts it after the owned input string. Deadlines use
+`std::chrono::steady_clock`.
+
+Already expired or cancelled work is rejected before backend execution. Local
+inference checks controls around execution but cannot interrupt a running ONNX
+or native GPU call; a late result can return a timeout/cancellation error after
+that call finishes. Remote and queue adapters apply their documented controls.
+Errors retain their category and optional HTTP `status_code` without turning
+technical failures into abstentions.
+
 This interface follows the [Jev primitives](https://docs.typesafe.ai/primitives/score)
 and shared-state independent-question model described in the supplied
 [project reference](https://gist.github.com/pjburnhill/adf8d28efcad9df037bfdece178ef965).

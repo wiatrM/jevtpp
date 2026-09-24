@@ -2,6 +2,9 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
+if(@JEVT_ENABLE_ASIO@)
+  find_dependency(Boost 1.74)
+endif()
 include("${CMAKE_CURRENT_LIST_DIR}/jevtppTargets.cmake")
 check_required_components(jevtpp)
 

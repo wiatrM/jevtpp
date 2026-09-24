@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -18,6 +20,31 @@
 #include <vector>
 
 namespace jevt {
+
+enum class content_kind { text, json };
+struct content_view {
+    std::string_view content;
+    content_kind kind = content_kind::text;
+};
+[[nodiscard]] constexpr content_view text_metadata(std::string_view value) { return {value, content_kind::text}; }
+// JSON validity is checked by backends that parse structured content. Local
+// backends deterministically use its supplied serialization as text.
+[[nodiscard]] constexpr content_view json_metadata(std::string_view value) { return {value, content_kind::json}; }
+struct evaluation_options {
+    std::optional<std::chrono::steady_clock::time_point> deadline{};
+    std::stop_token cancellation{};
+};
+struct token_usage { std::uint64_t input_tokens{}, output_tokens{}; };
+struct execution_metadata {
+    std::string provider;
+    std::string model_revision;
+    // One shared object identifies one usage report (possibly a whole batch).
+    std::shared_ptr<const token_usage> usage;
+    std::optional<float> provider_confidence;
+    std::optional<float> provider_score;
+    std::size_t attempts = 1;
+    std::optional<std::size_t> provider_choice_index;
+};
 
 template <std::size_t N>
 struct fixed_string {
@@ -31,12 +58,18 @@ template <auto Value>
 struct option_definition {
     static constexpr auto value = Value;
     std::string_view description;
+    content_view metadata{};
 };
 
 template <auto Value>
 [[nodiscard]] consteval auto option(std::string_view description) {
     static_assert(std::is_enum_v<decltype(Value)>, "jevt::option requires an enum value");
-    return option_definition<Value>{description};
+    return option_definition<Value>{description, text_metadata(description)};
+}
+template <auto Value>
+[[nodiscard]] consteval auto option(content_view description) {
+    static_assert(std::is_enum_v<decltype(Value)>, "jevt::option requires an enum value");
+    return option_definition<Value>{description.content, description};
 }
 
 template <class Enum, fixed_string Id, class... Options>
@@ -61,16 +94,18 @@ public:
     static_assert(unique_values(), "schema option values must be unique");
 
     constexpr explicit schema_definition(Options... options)
-        : descriptions_{options.description...} {}
+        : descriptions_{options.description...}, metadata_{options.metadata...} {}
 
     [[nodiscard]] static constexpr auto values() noexcept {
         return std::array<Enum, size>{Options::value...};
     }
     [[nodiscard]] constexpr const auto& descriptions() const noexcept { return descriptions_; }
+    [[nodiscard]] constexpr const auto& criteria_metadata() const noexcept { return metadata_; }
     [[nodiscard]] static constexpr std::string_view name() noexcept { return Id.view(); }
 
 private:
     std::array<std::string_view, size> descriptions_;
+    std::array<content_view, size> metadata_;
 };
 
 template <class Enum, fixed_string Id, class... Options>
@@ -99,11 +134,19 @@ enum class error_code : std::uint8_t {
     not_initialized,
     overloaded,
     shutting_down,
+    timeout,
+    cancelled,
+    authentication,
+    rate_limited,
+    connection_failure,
+    remote_error,
+    unsupported_feature,
 };
 
 struct error {
     error_code code{};
     std::string message;
+    std::optional<int> status_code{};
 };
 
 template <class T>
@@ -132,12 +175,41 @@ struct inference_request {
     std::string_view input;
     std::span<const std::string_view> options;
     kind question_kind = kind::choice;
+    content_kind input_kind = content_kind::text;
+    content_view instructions{};
+    std::span<const content_view> criteria_metadata{};
+    std::optional<std::chrono::steady_clock::time_point> deadline{};
+    std::stop_token cancellation{};
 };
 
 struct inference_response {
     std::vector<float> scores;
     std::string model_id;
+    execution_metadata metadata{};
 };
+
+[[nodiscard]] inline std::optional<error> execution_error(const evaluation_options& options) {
+    if (options.cancellation.stop_requested()) return error{error_code::cancelled, "inference cancelled"};
+    if (options.deadline && std::chrono::steady_clock::now() >= *options.deadline)
+        return error{error_code::timeout, "inference deadline exceeded"};
+    return std::nullopt;
+}
+[[nodiscard]] inline std::optional<error> execution_error(const inference_request& request) {
+    return execution_error(evaluation_options{request.deadline, request.cancellation});
+}
+
+// Metadata is serialized deterministically for local models: text is verbatim,
+// JSON retains its supplied bytes. Default Noul prompts remain unchanged.
+[[nodiscard]] inline std::array<std::string, 2> local_noul_criteria(const inference_request& request) {
+    std::array<std::string, 2> descriptions{"no, the statement does not hold", "yes, the statement holds"};
+    if (!request.criteria_metadata.empty()) {
+        if (request.criteria_metadata.size() != 2)
+            throw std::invalid_argument("Noul requires false and true criterion metadata");
+        for (std::size_t i = 0; i < 2; ++i)
+            if (!request.criteria_metadata[i].content.empty()) descriptions[i] = request.criteria_metadata[i].content;
+    }
+    return {"false: " + descriptions[0], "true: " + descriptions[1]};
+}
 
 class backend {
 public:
@@ -148,8 +220,10 @@ public:
         std::vector<inference_response> responses;
         responses.reserve(requests.size());
         for (const auto& request : requests) {
+            if (auto failure = execution_error(request)) return *failure;
             auto response = predict(request);
             if (!response) return response.error_value();
+            if (auto failure = execution_error(request)) return *failure;
             responses.push_back(std::move(response).value());
         }
         return responses;
@@ -163,7 +237,10 @@ public:
     explicit function_backend(function_type function, std::string name = "function")
         : function_(std::move(function)), name_(std::move(name)) {}
     [[nodiscard]] result<inference_response> predict(const inference_request& request) override {
-        return function_(request);
+        if (auto failure = execution_error(request)) return *failure;
+        auto response = function_(request);
+        if (auto failure = execution_error(request)) return *failure;
+        return response;
     }
     [[nodiscard]] std::string_view name() const noexcept override { return name_; }
 private:
@@ -175,6 +252,7 @@ struct decision_metadata {
     std::string model_id;
     float confidence{};
     bool abstained{};
+    execution_metadata execution{};
 };
 
 template <class Schema>
@@ -199,18 +277,21 @@ private:
 template <fixed_string Id>
 class predicate_result {
 public:
-    predicate_result(std::optional<bool> value, float confidence, std::string model_id)
-        : value_(value), confidence_(confidence), model_id_(std::move(model_id)) {}
+    predicate_result(std::optional<bool> value, float confidence, std::string model_id,
+                     execution_metadata metadata = {})
+        : value_(value), confidence_(confidence), model_id_(std::move(model_id)), metadata_(std::move(metadata)) {}
     [[nodiscard]] bool is_true() const noexcept { return value_ == true; }
     [[nodiscard]] bool is_false() const noexcept { return value_ == false; }
     [[nodiscard]] bool abstained() const noexcept { return !value_.has_value(); }
     [[nodiscard]] float confidence() const noexcept { return confidence_; }
     [[nodiscard]] std::string_view model_id() const noexcept { return model_id_; }
+    [[nodiscard]] const execution_metadata& metadata() const noexcept { return metadata_; }
     explicit operator bool() const = delete;
 private:
     std::optional<bool> value_;
     float confidence_{};
     std::string model_id_;
+    execution_metadata metadata_;
 };
 
 template <auto Value, class Handler>

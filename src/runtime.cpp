@@ -41,6 +41,7 @@ keyword_backend::keyword_backend(keyword_table keywords, std::string model_id)
     : keywords_(std::move(keywords)), model_id_(std::move(model_id)) {}
 
 result<inference_response> keyword_backend::predict(const inference_request& request) {
+    if (auto failure = execution_error(request)) return *failure;
     if (keywords_.size() != request.options.size())
         return error{error_code::invalid_request, "keyword table and option count differ"};
     const auto normalized = lowercase(request.input);
@@ -51,7 +52,9 @@ result<inference_response> keyword_backend::predict(const inference_request& req
                 scores[option_index] += 4.0F;
         }
     }
-    return inference_response{std::move(scores), model_id_};
+    execution_metadata metadata;
+    metadata.provider = "keyword";
+    return inference_response{std::move(scores), model_id_, std::move(metadata)};
 }
 
 } // namespace jevt

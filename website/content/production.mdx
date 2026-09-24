@@ -36,6 +36,9 @@ histogram bounds suited to actual latencies.
 `DiagnosticsOptions::recent_sample_every` samples only retained recent traces;
 all recorded calls still contribute to exact counters and histogram buckets.
 Zero disables recent traces, as does `recent_capacity = 0`.
+Input/output token counters sum observed backend reports, not billing charges.
+Remote usage shared across independently coalesced evaluations can be observed
+more than once; the library does not estimate a per-field cost allocation.
 
 The diagnostics HTTP server is a small, single-client-at-a-time loopback
 utility, not an authenticated public service. It uses socket idle timeouts and
@@ -51,10 +54,10 @@ Report vulnerabilities through the repository's
 | Area | Current boundary |
 |---|---|
 | Accelerator support | CPU by default; explicit CUDA uses either a compatible ONNX Runtime GPU build or the optional native laya.cpp build |
-| Async integration | Bounded workers, microbatching and future submission are available; no coroutine/Asio adapter or running-inference cancellation |
+| Async integration | Bounded workers, futures and optional Boost.Asio completion tokens/coroutines; no forced interruption of running local inference |
 | Quality | Eight-ticket example set is a smoke test, not a representative benchmark |
 | Confidence | Distribution concentration/threshold policies, not a domain accuracy guarantee |
-| Input structure | JSON is serialized context; syntax validation belongs to the caller |
+| Input structure | Core JSON is serialized context; remote parses structured payloads, while application schema validation belongs to the caller |
 | Compatibility | Pre-1.0 APIs may change; review release notes and recompile consumers |
 
 The Laya adapter selects CUDA with
@@ -96,6 +99,14 @@ size and batch-formation delay explicitly, and handle overload errors.
 Shutdown drains accepted work and waits for backend completion; application
 deadlines do not interrupt an active inference call. See the
 [concurrency guide](../concurrency/) for ownership and shutdown requirements.
+
+The [remote backend](../../docs/REMOTE.md) is opt-in and sends application context
+to the configured provider. Supply credentials explicitly, review the provider's
+data-handling terms, set byte/time/retry limits and avoid sensitive data in
+questions or criteria unless that transfer is authorized. Retries may repeat a
+billable request. Local mock and loopback CI does not establish live-provider
+compatibility, availability or billing behavior. Qualify your chosen endpoint
+and model separately before deployment.
 
 ## Release evidence
 

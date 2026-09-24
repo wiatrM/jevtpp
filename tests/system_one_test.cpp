@@ -249,4 +249,122 @@ constexpr auto bad_threshold = jevt::noul<"urgent">("Urgent?", {0.9F, 0.1F});
 constexpr auto bad_field = jevt::decision_model<"bad">("Evaluate.", 42);
 #endif
 
+JEVT_TEST("structured metadata survives owned requests and projection") {
+    constexpr auto criteria = jevt::schema<category, "structured.criteria">(
+        jevt::option<category::billing>(jevt::json_metadata(R"({"topic":"billing"})")),
+        jevt::option<category::technical>(jevt::text_metadata("technical")));
+    constexpr auto structured = jevt::decision_model<"structured">(
+        jevt::json_metadata(R"({"role":"triage"})"),
+        jevt::choice<"route">(jevt::json_metadata(R"({"task":"route"})"), criteria),
+        jevt::noul<"approve">("Approve?", jevt::text_metadata("policy forbids"),
+                              jevt::json_metadata(R"({"policy":"permits"})")));
+    auto original = jevt::make_system_one_request(structured, jevt::json_state(R"({"ticket":1})"));
+    auto copied = original;
+    original.fields[0].instructions.content = "changed";
+    original.state.content = "changed";
+    auto moved = std::move(copied);
+    const auto views = moved.views();
+    const auto requests = views.requests();
+    JEVT_REQUIRE(requests[0].input_kind == jevt::content_kind::json);
+    JEVT_REQUIRE_EQ(requests[0].input, R"({"ticket":1})");
+    JEVT_REQUIRE(requests[0].instructions.kind == jevt::content_kind::json);
+    JEVT_REQUIRE_EQ(requests[0].instructions.content, R"({"model":{"role":"triage"},"field":{"task":"route"}})");
+    JEVT_REQUIRE_EQ(requests[0].criteria_metadata[0].content, criteria.descriptions()[0]);
+    JEVT_REQUIRE(requests[0].criteria_metadata[0].kind == jevt::content_kind::json);
+    JEVT_REQUIRE_EQ(requests[0].question, std::string(structured.description) + "\n\n" + R"({"task":"route"})");
+    const auto rendered = jevt::local_noul_criteria(requests[1]);
+    JEVT_REQUIRE_EQ(rendered[0], "false: policy forbids");
+    JEVT_REQUIRE_EQ(rendered[1], R"(true: {"policy":"permits"})");
+    const auto projected = jevt::select_fields<"approve">(structured);
+    const auto projected_request = jevt::make_system_one_request(projected, jevt::text_state("state"));
+    JEVT_REQUIRE_EQ(projected_request.fields[0].instructions.content, R"({"model":{"role":"triage"},"field":"Approve?"})");
+}
+
+JEVT_TEST("execution metadata preserves evidence and counts shared usage once") {
+    constexpr auto two = jevt::schema<category, "two">(
+        jevt::option<category::billing>("billing"), jevt::option<category::technical>("technical"));
+    constexpr auto definition = jevt::decision_model<"evidence">("model",
+        jevt::choice<"route">("route", two), jevt::noul<"approve">("approve"));
+    const auto usage = std::make_shared<const jevt::token_usage>(jevt::token_usage{123, 7});
+    bool share_usage = true;
+    auto backend = std::make_shared<jevt::function_backend>([&](const jevt::inference_request& request) -> jevt::result<jevt::inference_response> {
+        jevt::execution_metadata metadata;
+        metadata.provider = "fixture-provider";
+        metadata.model_revision = "revision-42";
+        metadata.usage = share_usage ? usage : std::make_shared<const jevt::token_usage>(*usage);
+        metadata.provider_confidence = 0.93F;
+        metadata.provider_score = 0.77F;
+        metadata.attempts = 2;
+        metadata.provider_choice_index = 1;
+        return jevt::inference_response{request.question_kind == jevt::inference_request::kind::choice
+            ? std::vector<float>{0.5F, 0.5F} : std::vector<float>{0.2F, 0.8F}, "fixture", metadata};
+    });
+    jevt::context context({.inference_backend = backend});
+    const auto result = context.bind_system_one(definition).evaluate("state");
+    JEVT_REQUIRE(result);
+    const auto& answer = result->get<"route">();
+    JEVT_REQUIRE_EQ(answer.value(), category::technical);
+    JEVT_REQUIRE_EQ(answer.confidence(), 0.0F);
+    JEVT_REQUIRE_EQ(answer.metadata().provider, "fixture-provider");
+    JEVT_REQUIRE_EQ(answer.metadata().model_revision, "revision-42");
+    JEVT_REQUIRE_EQ(answer.metadata().attempts, 2u);
+    JEVT_REQUIRE_EQ(*answer.metadata().provider_confidence, 0.93F);
+    JEVT_REQUIRE_EQ(*result->get<"approve">().metadata().provider_score, 0.77F);
+    JEVT_REQUIRE(answer.metadata().usage == result->get<"approve">().metadata().usage);
+    const auto snapshot = context.diagnostics()->snapshot();
+    JEVT_REQUIRE_EQ(snapshot.total.calls, 1u);
+    JEVT_REQUIRE_EQ(snapshot.total.input_tokens, 123u);
+    JEVT_REQUIRE_EQ(snapshot.total.output_tokens, 7u);
+    JEVT_REQUIRE_EQ(snapshot.decisions.front().stats.input_tokens, 123u);
+    context.diagnostics()->reset();
+    JEVT_REQUIRE_EQ(context.diagnostics()->snapshot().total.input_tokens, 0u);
+    share_usage = false;
+    JEVT_REQUIRE(context.bind_system_one(definition).evaluate("state"));
+    JEVT_REQUIRE_EQ(context.diagnostics()->snapshot().total.input_tokens, 246u);
+    JEVT_REQUIRE_EQ(context.diagnostics()->snapshot().total.output_tokens, 14u);
+}
+
+JEVT_TEST("evaluation forwards deadlines and cancellation and rejects expired work") {
+    constexpr auto definition = jevt::decision_model<"controlled">("model", jevt::noul<"flag">("flag"));
+    std::stop_source source;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    std::size_t calls = 0;
+    auto backend = std::make_shared<jevt::function_backend>([&](const jevt::inference_request& request) -> jevt::result<jevt::inference_response> {
+        ++calls;
+        JEVT_REQUIRE_EQ(request.deadline, std::optional{deadline});
+        JEVT_REQUIRE(request.cancellation.stop_possible());
+        return jevt::inference_response{{0.1F, 0.9F}, "fixture"};
+    });
+    auto runner = jevt::bind_system_one(definition, backend);
+    JEVT_REQUIRE(runner.evaluate("state", jevt::evaluation_options{deadline, source.get_token()}));
+    source.request_stop();
+    const auto cancelled = runner.evaluate("state", jevt::evaluation_options{deadline, source.get_token()});
+    JEVT_REQUIRE(!cancelled && cancelled.error_value().code == jevt::error_code::cancelled);
+    const auto expired = runner.evaluate("state", jevt::evaluation_options{std::chrono::steady_clock::now() - std::chrono::seconds(1)});
+    JEVT_REQUIRE(!expired && expired.error_value().code == jevt::error_code::timeout);
+    JEVT_REQUIRE_EQ(calls, 1u);
+}
+
+JEVT_TEST("classic choices preserve state kinds provider tie selection and error status") {
+    auto backend = std::make_shared<jevt::function_backend>([](const jevt::inference_request& request) -> jevt::result<jevt::inference_response> {
+        JEVT_REQUIRE(request.input_kind == jevt::content_kind::json);
+        JEVT_REQUIRE_EQ(request.criteria_metadata.size(), 4u);
+        jevt::execution_metadata metadata;
+        metadata.provider = "fixture";
+        metadata.provider_choice_index = 2;
+        return jevt::inference_response{{1, 1, 1, 1}, "model", metadata};
+    });
+    jevt::context context({.inference_backend = backend, .abstain_threshold = 0});
+    const auto answer = context.bind(categories).choose(jevt::json_state("{}"));
+    JEVT_REQUIRE(answer);
+    JEVT_REQUIRE_EQ(answer->value(), category::sales);
+    JEVT_REQUIRE_EQ(answer->metadata().execution.provider, "fixture");
+    auto failure = std::make_shared<jevt::function_backend>([](const auto&) -> jevt::result<jevt::inference_response> {
+        return jevt::error{jevt::error_code::authentication, "unauthorized", 401};
+    });
+    const auto rejected = jevt::context({.inference_backend = failure}).bind(categories).choose("state");
+    JEVT_REQUIRE(!rejected);
+    JEVT_REQUIRE_EQ(*rejected.error_value().status_code, 401);
+}
+
 int main() { return jevt::test::run_all("system_one"); }

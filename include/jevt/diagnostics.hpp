@@ -1,5 +1,7 @@
 #pragma once
 
+#include "jevt/core.hpp"
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -42,6 +44,10 @@ struct CounterSnapshot {
   double latency_p95_ms = 0.0;
   double latency_p99_ms = 0.0;
   HistogramSnapshot latency_histogram;
+  // Observed per-evaluation usage, not provider billing totals. A provider's
+  // report shared across separate evaluations can be observed more than once.
+  std::uint64_t input_tokens = 0;
+  std::uint64_t output_tokens = 0;
 };
 
 struct DecisionSnapshot {
@@ -83,7 +89,8 @@ class Diagnostics {
   // user input. `tag`, when present, should be an opaque identifier or hash.
   void record_call(std::string_view decision, CallOutcome outcome,
                    std::chrono::nanoseconds latency,
-                   std::optional<std::string_view> tag = std::nullopt);
+                   std::optional<std::string_view> tag = std::nullopt,
+                   token_usage usage = {});
 
   [[nodiscard]] DiagnosticsSnapshot snapshot() const;
   [[nodiscard]] std::string to_json() const;

@@ -13,23 +13,26 @@ using response_future = std::future<result<inference_response>>;
 
 struct batching_backend::impl {
     struct job {
-        std::string decision_id, question, input;
-        std::vector<std::string> options;
-        std::vector<std::string_view> option_views;
-        inference_request::kind kind;
+        detail::owned_inference_request request;
         std::size_t bytes;
         std::chrono::steady_clock::time_point arrival = std::chrono::steady_clock::now();
         std::promise<result<inference_response>> promise;
+        std::function<void(result<inference_response>)> callback;
+        bool finished = false;
 
-        explicit job(const inference_request& r)
-            : decision_id(r.decision_id), question(r.question), input(r.input),
-              kind(r.question_kind), bytes(decision_id.size() + question.size() + input.size()) {
-            options.reserve(r.options.size());
-            for (auto option : r.options) { options.emplace_back(option); bytes += option.size(); }
-            option_views.reserve(options.size());
-            for (const auto& option : options) option_views.push_back(option);
+        explicit job(const inference_request& r) : request(r), bytes(request.bytes()) {}
+        inference_request view() const { return request.view(); }
+        void finish(result<inference_response> response) {
+            if (finished) return;
+            // Work already running may be noninterruptible, but its late result
+            // must not escape the request's cancellation/deadline contract.
+            if (const auto failure = execution_error(view())) response = *failure;
+            finished = true;
+            if (callback) {
+                auto completion = std::move(callback);
+                try { completion(std::move(response)); } catch (...) { /* User callback contract violation. */ }
+            } else promise.set_value(std::move(response));
         }
-        inference_request view() const { return {decision_id, question, input, option_views, kind}; }
     };
 
     std::shared_ptr<backend> wrapped;
@@ -83,6 +86,26 @@ struct batching_backend::impl {
         return futures;
     }
 
+    void enqueue_callback(const inference_request& request,
+                          std::function<void(result<inference_response>)> callback) {
+        if (!callback) throw std::invalid_argument("batching completion callback is empty");
+        std::unique_lock lock(mutex);
+        if (stopping || queue.size() == options.queue_capacity) {
+            ++counters.rejected;
+            const error failure{stopping ? error_code::shutting_down : error_code::overloaded,
+                stopping ? "batching backend is shutting down" : "batching backend queue is full"};
+            lock.unlock();
+            try { callback(failure); } catch (...) { /* User callback contract violation. */ }
+            return;
+        }
+        auto pending = std::make_unique<job>(request);
+        pending->callback = std::move(callback);
+        queue.push_back(std::move(pending));
+        ++counters.accepted;
+        lock.unlock();
+        changed.notify_all();
+    }
+
     std::size_t bucket(const job& item) const {
         return options.length_bucket_width ? item.bytes / options.length_bucket_width : 0;
     }
@@ -92,6 +115,7 @@ struct batching_backend::impl {
         for (;;) {
             std::vector<std::unique_ptr<job>> batch;
             std::vector<inference_request> views;
+            std::vector<job*> active;
             std::unique_lock lock(mutex);
             changed.wait(lock, [&] { return stopping || !queue.empty(); });
             if (queue.empty()) break;
@@ -109,6 +133,7 @@ struct batching_backend::impl {
             const auto key = bucket(*queue.front());
             batch.reserve(options.max_batch_size);
             views.reserve(options.max_batch_size);
+            active.reserve(options.max_batch_size);
             for (auto it = queue.begin(); it != queue.end() && batch.size() < options.max_batch_size;) {
                 if (bucket(**it) == key) {
                     batch.push_back(std::move(*it));
@@ -116,25 +141,31 @@ struct batching_backend::impl {
                 } else ++it;
             }
             counters.in_flight += batch.size();
-            ++counters.batches;
             lock.unlock();
             changed.notify_all();
             try {
-                for (const auto& item : batch) views.push_back(item->view());
-                auto responses = wrapped->predict_batch(views);
-                if (!responses) {
-                    for (auto& item : batch) item->promise.set_value(responses.error_value());
-                } else if (responses->size() != batch.size()) {
-                    for (auto& item : batch) item->promise.set_value(error{
-                        error_code::invalid_backend_output, "batching backend response count mismatch"});
-                } else {
-                    for (std::size_t i = 0; i < batch.size(); ++i)
-                        batch[i]->promise.set_value(std::move((*responses)[i]));
+                for (const auto& item : batch) {
+                    const auto request = item->view();
+                    if (const auto failure = detail::request_preflight(request)) item->finish(*failure);
+                    else { views.push_back(request); active.push_back(item.get()); }
+                }
+                if (!active.empty()) {
+                    { std::lock_guard counter_lock(mutex); ++counters.batches; }
+                    auto responses = wrapped->predict_batch(views);
+                    if (!responses) {
+                        for (auto* item : active) item->finish(responses.error_value());
+                    } else if (responses->size() != active.size()) {
+                        for (auto* item : active) item->finish(error{
+                            error_code::invalid_backend_output, "batching backend response count mismatch"});
+                    } else {
+                        for (std::size_t i = 0; i < active.size(); ++i)
+                            active[i]->finish(std::move((*responses)[i]));
+                    }
                 }
             } catch (const std::exception& e) {
-                for (auto& item : batch) item->promise.set_value(error{error_code::backend_failure, e.what()});
+                for (auto& item : batch) item->finish(error{error_code::backend_failure, e.what()});
             } catch (...) {
-                for (auto& item : batch) item->promise.set_value(error{
+                for (auto& item : batch) item->finish(error{
                     error_code::backend_failure, "wrapped backend threw an unknown exception"});
             }
             lock.lock();
@@ -159,6 +190,10 @@ batching_backend::~batching_backend() { impl_->shutdown(); }
 std::future<result<inference_response>> batching_backend::submit(const inference_request& r) {
     auto futures = impl_->enqueue(std::span(&r, 1));
     return std::move(futures.front());
+}
+void batching_backend::submit_callback(const inference_request& r,
+                                      std::function<void(result<inference_response>)> callback) {
+    impl_->enqueue_callback(r, std::move(callback));
 }
 result<inference_response> batching_backend::predict(const inference_request& r) {
     if (executing_pool == impl_.get()) return error{error_code::invalid_request, "recursive batching predict"};

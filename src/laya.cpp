@@ -361,6 +361,7 @@ struct laya_backend::impl {
     result<std::vector<inference_response>> predict_batch(std::span<const inference_request> requests) {
         try {
             if (requests.empty()) return std::vector<inference_response>{};
+            for (const auto& request : requests) if (auto failure = execution_error(request)) return *failure;
             struct item {
                 std::vector<std::string> options;
                 std::vector<std::int64_t> ids;
@@ -380,8 +381,8 @@ struct laya_backend::impl {
                 current.qtype = request.question_kind == inference_request::kind::noul ? 2U
                     : request.question_kind == inference_request::kind::score ? 1U : 0U;
                 if (request.question_kind == inference_request::kind::noul) {
-                    current.options = {"false: no, the statement does not hold",
-                                       "true: yes, the statement holds"};
+                    const auto descriptions = local_noul_criteria(request);
+                    current.options.assign(descriptions.begin(), descriptions.end());
                 } else {
                     if (request.options.empty())
                         return error{error_code::invalid_request, "Laya question requires at least one option"};
@@ -459,6 +460,7 @@ struct laya_backend::impl {
             constexpr std::array input_names{"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"};
             constexpr std::array output_names{"logits"};
             std::vector<Ort::Value> outputs;
+            for (const auto& request : requests) if (auto failure = execution_error(request)) return *failure;
             ++runs;
             if (options.use_io_binding) {
                 Ort::IoBinding binding{*session};
@@ -474,6 +476,7 @@ struct laya_backend::impl {
                 outputs = session->Run(Ort::RunOptions{nullptr}, input_names.data(), tensors.data(), tensors.size(),
                                        output_names.data(), output_names.size());
             }
+            for (const auto& request : requests) if (auto failure = execution_error(request)) return *failure;
             if (outputs.size() != 1 || !outputs[0].IsTensor())
                 return error{error_code::invalid_backend_output, "Laya logits output must be a tensor"};
             const auto info = outputs[0].GetTensorTypeAndShapeInfo();
@@ -495,11 +498,18 @@ struct laya_backend::impl {
                             std::to_string(row) + ", " + std::to_string(column) + "]"};
                 auto probabilities = softmax(
                     {logits + row * marker_width, current.options.size()}, current.temperature);
-                responses.push_back(inference_response{std::move(probabilities), options.model_id});
+                execution_metadata metadata;
+                metadata.provider = "onnxruntime";
+                // Exact per-row usage remains additive when a queue combines
+                // requests from independent evaluations into the same batch.
+                metadata.usage = std::make_shared<const token_usage>(token_usage{current.ids.size(), 0});
+                responses.push_back(inference_response{std::move(probabilities), options.model_id, std::move(metadata)});
             }
             return responses;
         } catch (const Ort::Exception& exception) {
             return error{error_code::backend_failure, std::string{"ONNX Runtime: "} + exception.what()};
+        } catch (const std::invalid_argument& exception) {
+            return error{error_code::invalid_request, exception.what()};
         } catch (const std::exception& exception) {
             return error{error_code::backend_failure, std::string{"Laya backend: "} + exception.what()};
         }

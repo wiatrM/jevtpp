@@ -81,6 +81,12 @@ JEVT_TEST("native validates requests and preserves one-option results without in
     JEVT_REQUIRE(!invalid_score);
     const auto bad_kind = model.predict({"kind", "question", "state", labels, static_cast<jevt::inference_request::kind>(99)});
     JEVT_REQUIRE(!bad_kind);
+    std::stop_source stop;
+    stop.request_stop();
+    auto cancelled_request = choice;
+    cancelled_request.cancellation = stop.get_token();
+    const auto cancelled = model.predict(cancelled_request);
+    JEVT_REQUIRE(!cancelled && cancelled.error_value().code == jevt::error_code::cancelled);
 }
 
 JEVT_TEST("native batches preserve row order duplicates and mixed question kinds") {
@@ -101,6 +107,12 @@ JEVT_TEST("native batches preserve row order duplicates and mixed question kinds
         const auto individual = native().predict(requests[i]);
         JEVT_REQUIRE(individual);
         check_probabilities((*batched)[i], individual->scores.size());
+        JEVT_REQUIRE_EQ((*batched)[i].metadata.provider, "laya.cpp");
+        JEVT_REQUIRE((*batched)[i].metadata.usage);
+        JEVT_REQUIRE_EQ((*batched)[i].metadata.usage->output_tokens, 0u);
+        if (requests[i].options.size() == 1) JEVT_REQUIRE_EQ((*batched)[i].metadata.usage->input_tokens, 0u);
+        else JEVT_REQUIRE((*batched)[i].metadata.usage->input_tokens > 0);
+        if (i) JEVT_REQUIRE((*batched)[i].metadata.usage != (*batched)[i - 1].metadata.usage);
         for (std::size_t j = 0; j < individual->scores.size(); ++j)
             JEVT_REQUIRE(std::abs((*batched)[i].scores[j] - individual->scores[j]) < 1e-4F);
     }
@@ -133,11 +145,16 @@ JEVT_TEST("native and ONNX return calibrated probabilities for the same model") 
     const std::array<std::string_view, 3> duplicates{"same", "same", ""};
     const std::array<std::string_view, 3> levels{"low", "medium", "high"};
     const std::string long_state(8000, 'x');
+    const std::array custom_criteria{
+        jevt::text_metadata("Support can resolve the request"),
+        jevt::json_metadata(R"({"escalate":"specialist required"})")};
+    jevt::inference_request custom_noul{"custom", "Escalate?", "Payment dispute requires investigation", {}, jevt::inference_request::kind::noul};
+    custom_noul.criteria_metadata = custom_criteria;
     const std::array requests{choice,
         jevt::inference_request{"dupes", "Choose one", "Zażółć gęślą jaźń. 中文 <mask> [MASK]", duplicates},
         jevt::inference_request{"score", "How urgent?", "Server unavailable", levels, jevt::inference_request::kind::score},
         jevt::inference_request{"noul", "Needs escalation?", "", {}, jevt::inference_request::kind::noul},
-        jevt::inference_request{"long", "Which team?", long_state, labels}};
+        jevt::inference_request{"long", "Which team?", long_state, labels}, custom_noul};
     const auto expected = onnx.predict_batch(requests);
     const auto actual = native().predict_batch(requests);
     JEVT_REQUIRE(expected && actual);
@@ -145,6 +162,9 @@ JEVT_TEST("native and ONNX return calibrated probabilities for the same model") 
     float maximum_delta = 0;
     for (std::size_t i = 0; i < actual->size(); ++i) {
         JEVT_REQUIRE_EQ((*actual)[i].scores.size(), (*expected)[i].scores.size());
+        JEVT_REQUIRE((*actual)[i].metadata.usage && (*expected)[i].metadata.usage);
+        JEVT_REQUIRE_EQ((*actual)[i].metadata.usage->input_tokens, (*expected)[i].metadata.usage->input_tokens);
+        if (i) JEVT_REQUIRE((*expected)[i].metadata.usage != (*expected)[i - 1].metadata.usage);
         for (std::size_t j = 0; j < (*actual)[i].scores.size(); ++j) {
             const auto delta = std::abs((*actual)[i].scores[j] - (*expected)[i].scores[j]);
             maximum_delta = std::max(maximum_delta, delta);

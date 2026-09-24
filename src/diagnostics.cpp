@@ -66,6 +66,7 @@ struct Counters {
   long double latency_sum_ms = 0.0;
   double latency_max_ms = 0.0;
   std::vector<std::uint64_t> buckets;
+  std::uint64_t input_tokens = 0, output_tokens = 0;
 };
 
 double percentile(const Counters& counters, const std::vector<double>& bounds,
@@ -94,6 +95,8 @@ CounterSnapshot make_snapshot(const Counters& source,
   result.successes = source.successes;
   result.errors = source.errors;
   result.abstains = source.abstains;
+  result.input_tokens = source.input_tokens;
+  result.output_tokens = source.output_tokens;
   if (source.calls != 0) {
     result.latency_mean_ms =
         static_cast<double>(source.latency_sum_ms / source.calls);
@@ -109,6 +112,7 @@ CounterSnapshot make_snapshot(const Counters& source,
 void append_stats_json(std::ostringstream& out, const CounterSnapshot& s) {
   out << "{\"calls\":" << s.calls << ",\"successes\":" << s.successes
       << ",\"errors\":" << s.errors << ",\"abstains\":" << s.abstains
+      << ",\"input_tokens\":" << s.input_tokens << ",\"output_tokens\":" << s.output_tokens
       << ",\"latency_ms\":{\"mean\":" << s.latency_mean_ms
       << ",\"p50\":" << s.latency_p50_ms << ",\"p95\":"
       << s.latency_p95_ms << ",\"p99\":" << s.latency_p99_ms
@@ -166,7 +170,7 @@ Diagnostics& Diagnostics::operator=(Diagnostics&& other) noexcept {
 
 void Diagnostics::record_call(std::string_view decision, CallOutcome outcome,
                               std::chrono::nanoseconds latency,
-                              std::optional<std::string_view> tag) {
+                              std::optional<std::string_view> tag, token_usage usage) {
   if (!impl_) return;
   const double latency_ms =
       std::max(0.0, std::chrono::duration<double, std::milli>(latency).count());
@@ -179,6 +183,8 @@ void Diagnostics::record_call(std::string_view decision, CallOutcome outcome,
 
   auto update = [&](Counters& counters) {
     ++counters.calls;
+    counters.input_tokens += usage.input_tokens;
+    counters.output_tokens += usage.output_tokens;
     if (outcome == CallOutcome::success) ++counters.successes;
     if (outcome == CallOutcome::error) ++counters.errors;
     if (outcome == CallOutcome::abstain) ++counters.abstains;
@@ -242,6 +248,12 @@ std::string Diagnostics::to_prometheus() const {
       << "# HELP jevt_calls_total Total evaluated calls.\n"
       << "# TYPE jevt_calls_total counter\n"
       << "jevt_calls_total " << snap.total.calls << "\n"
+      << "# HELP jevt_input_tokens_total Observed input usage across evaluations, not provider billing totals.\n"
+      << "# TYPE jevt_input_tokens_total counter\n"
+      << "jevt_input_tokens_total " << snap.total.input_tokens << "\n"
+      << "# HELP jevt_output_tokens_total Observed output usage across evaluations, not provider billing totals.\n"
+      << "# TYPE jevt_output_tokens_total counter\n"
+      << "jevt_output_tokens_total " << snap.total.output_tokens << "\n"
       << "# HELP jevt_outcomes_total Evaluated calls by outcome.\n"
       << "# TYPE jevt_outcomes_total counter\n"
       << "jevt_outcomes_total{outcome=\"success\"} " << snap.total.successes << "\n"
