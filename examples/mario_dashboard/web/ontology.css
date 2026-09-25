@@ -1,0 +1,16 @@
+.ontology-panel{min-width:0}
+.ontology-toolbar{display:flex;gap:20px;align-items:center;flex-wrap:wrap;padding:10px 18px;color:var(--muted);font-size:9px;border-bottom:1px solid var(--line)}
+.ontology-toolbar label{margin-left:auto}
+.ontology-toolbar select{background:#08130c;color:var(--green);border:1px solid var(--line2);font:inherit;padding:6px}
+.ontology-scroll{overflow-x:auto}
+.ontology-panel canvas{display:block;width:100%;min-width:850px;height:390px;cursor:crosshair}
+.ontology-legend{padding:8px 18px;color:var(--muted);font-size:9px}
+.ontology-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin:0 10px 0 3px;background:#3dff74}
+.ontology-dot.empirical{background:#69d7e6}
+.ontology-dot.confirmed{background:#b9ff8f}
+.ontology-dot.focus{background:#f0ad27}
+.ontology-dot.uncertain{background:#63836c}
+.ontology-panel details{margin:0 18px 16px}
+.ontology-panel details pre{max-height:220px;overflow:auto;font-size:10px;color:var(--muted)}
+.ontology-panel .graph-inspector pre{max-height:230px;overflow:auto}
+@media(max-width:650px){.ontology-toolbar label{margin-left:0}.ontology-panel canvas{height:500px}}

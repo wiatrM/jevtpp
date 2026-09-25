@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>JevT++ · NES Runner Lab</title>
+  <link rel="stylesheet" href="/dashboard.css?v=14">
+  <link rel="stylesheet" href="/dashboard-overrides.css?v=14">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">J++</span><span>NES RUNNER LAB</span><b id="dashboardVersion">VERIFYING PIPELINE</b></div>
+    <div class="run-state"><span class="pulse"></span><span id="runStatus">CONNECTING</span></div>
+    <div class="header-metrics">
+      <span><small>BACKEND</small><strong id="backend">—</strong></span>
+      <span><small>DECISION</small><strong id="decisionIndex">0000</strong></span>
+      <span><small>LATENCY</small><strong id="latency">—</strong></span>
+      <span><small>C++ CONTROL</small><strong id="controlLatency">—</strong></span>
+      <span><small>EMULATOR</small><strong id="emulatorFps">—</strong></span>
+      <span><small>MODEL DEVICE</small><strong id="gpuDevice">VERIFYING CUDA</strong></span>
+    </div>
+    <div class="controls">
+      <label class="mode-control"><span>MODEL</span><select id="modelSelect" aria-label="Judgment model">
+        <option value="open_jev">Open-JEV</option><option value="laya" disabled>LAYA · checking</option>
+      </select><small id="modelSelectStatus" role="status">Checking local backends</small></label>
+      <label class="mode-control"><span>OBJECTIVE</span><select id="modeSelect">
+        <option value="speedrun">SPEEDRUN</option>
+        <option value="hunter">KILL 'EM ALL</option>
+        <option value="collector">COLLECTOR</option>
+        <option value="score_attack">SCORE ATTACK</option>
+      </select></label>
+      <label class="mode-control"><span>KNOWLEDGE</span><select id="knowledgeScope" aria-label="Knowledge retention across game over">
+        <option value="run">RESET AT GAME OVER</option>
+        <option value="session">RETAIN ACROSS RUNS</option>
+      </select></label>
+      <button id="pauseButton">PAUSE</button>
+      <button id="restartButton" class="primary">RESTART</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero-grid">
+      <article class="panel game-panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">LIVE EMULATOR FEED</span><h1>Super Mario Bros. · NES</h1></div>
+          <div class="episode-stats"><span>SCORE <b id="score">0</b></span><span>TIME <b id="timeLeft">—</b></span><span>LIVES <b id="lives">—</b></span></div>
+        </div>
+        <div class="session-strip" aria-label="Full game session">
+          <span>WORLD <b id="worldStage">1-1</b></span>
+          <span>RUN <b id="runId">1</b></span>
+          <span>CLEARED <b id="stagesCleared">0 / 32</b></span>
+          <span>DEATHS <b id="deathCount">0</b></span>
+          <span>KNOWLEDGE GEN <b id="memoryGeneration">1</b></span>
+          <span class="session-phase" id="sessionPhase">DISCOVERING</span>
+        </div>
+        <div class="game-screen">
+          <img id="gameFrame" alt="Live Super Mario Bros. emulator frame">
+          <div class="scanlines"></div>
+          <div class="frame-badge"><span></span> RAM + FRAME SYNC</div>
+        </div>
+        <div class="game-footer">
+          <div><small>ACTIVE MACRO</small><strong id="activeAction">WAITING</strong></div>
+          <div class="progress-wrap"><small>FULL GAME · <b id="stageProgressText">0 / 32 STAGES</b></small><div class="progress"><i id="progressBar"></i></div></div>
+          <div><small>REWARD</small><strong id="reward">+0.0</strong></div>
+          <div><small>FRAME</small><strong id="frameIndex">0</strong></div>
+        </div>
+      </article>
+
+      <article class="panel judgments-panel">
+        <div class="panel-head compact">
+          <div><span class="eyebrow" id="modelStack">VERIFYING MODEL STACK</span><h2>Asynchronous judgment · <b id="activeGoal">—</b></h2></div>
+          <span class="confidence" id="confidence">CONF —</span>
+        </div>
+        <div id="probabilities" class="probabilities"></div>
+        <div class="signal-grid">
+          <div><small>C++ JUMP INPUT (NOT MODEL SCORE)</small><div class="meter"><i id="jumpMeter"></i></div><strong id="jumpValue">—</strong></div>
+          <div><small>NEAREST RAM HAZARD</small><div class="meter amber"><i id="dangerMeter"></i></div><strong id="dangerValue">—</strong></div>
+        </div>
+        <div class="detector-grid" id="detectorGrid"></div>
+        <div class="reason-strip"><span>MODEL INPUT</span><p id="situation">Waiting for structured NES telemetry…</p></div>
+        <div class="reason-strip control-gate"><span>CONTROL GATE</span><p id="gateReason">Waiting for typed judgments…</p></div>
+        <p id="modelError" role="status"></p>
+        <details class="situation-report" open>
+          <summary>SITUATION REPORT · OBSERVABLE DECISIONS</summary>
+          <p id="situationSummary">Waiting for model and controller evidence.</p>
+          <pre id="situationReport"></pre>
+          <small>The selected model ranks actual plan candidates. JevT++ rechecks context and feasibility; one arbiter owns the final input. Switching models preserves the current game and knowledge. Scores are preferences, not win probabilities.</small>
+        </details>
+      </article>
+    </section>
+
+    <section class="panel online-panel">
+      <div class="panel-head compact"><div><span class="eyebrow">ONLINE LEARNER · V13</span><h2>Observe → learn → plan → act → verify</h2></div><span class="json-badge" id="learnerStatus">WAITING</span></div>
+      <div class="state-facts" id="learnerFacts"></div>
+      <p id="taskSummary" class="learner-summary">Waiting for an executed learning cycle.</p>
+      <div class="plan-table-wrap"><table class="plan-table"><thead><tr><th>Candidate</th><th>Utility</th><th>Risk cost</th><th>Forecast</th></tr></thead><tbody id="planRows"></tbody></table></div>
+      <p class="learner-summary">Forecasts are approximate. Risk costs are not death probabilities. Disappearance is never counted as elimination. In RETAIN mode, observational memory survives GAME OVER only within this demo process; controller's per-run action state still resets.</p>
+    </section>
+    <section class="panel knowledge-panel">
+      <div class="panel-head compact">
+        <div><span class="eyebrow">LIVE DIGITAL TWIN · OBSERVED EXPERIENCE</span><h2>Current forecast &amp; observed world</h2></div>
+        <span class="json-badge" id="knowledgeCount">NO OBSERVATIONS</span>
+      </div>
+      <div class="twin-readout">
+        <span class="eyebrow">SHORT HORIZON · CURRENT RAM FIRST</span>
+        <p id="twinSummary">Waiting for a current RAM projection.</p>
+        <small id="twinProvenance">No forecast is available yet.</small>
+        <small id="learningSummary">Learning delta pending.</small>
+      </div>
+      <canvas id="knowledgeMap" aria-label="Map discovered from observed NES collision telemetry"></canvas>
+      <p id="knowledgeSummary">Only observed geometry is retained; unknown space is not invented.</p>
+      <details><summary>EXPERIENCE GRAPH · JSON</summary><pre id="knowledgeGraph"></pre></details>
+    </section>
+    <section class="panel ontology-panel">
+      <div class="panel-head">
+        <div><span class="eyebrow">LIVE KNOWLEDGE ONTOLOGY · EVIDENCE LINKS</span>
+          <h2>What Mario observed, learned and is considering</h2></div>
+        <span class="json-badge" id="ontologyCount">WAITING FOR FACTS</span>
+      </div>
+      <div class="ontology-toolbar">
+        <span id="ontologyScope">Run scoped · resets at GAME OVER</span>
+        <span id="ontologyFocus">Model focus: none</span>
+        <span id="ontologyInfluence">KNOWLEDGE ACTIONS: 0</span>
+        <label>SHOW <select id="ontologyFilter">
+          <option value="all">ALL EVIDENCE</option>
+          <option value="empirical">LEARNED RELATIONS</option>
+          <option value="feedback">OUTCOME FEEDBACK</option>
+          <option value="focus">MODEL FOCUS</option>
+        </select></label>
+      </div>
+      <div class="ontology-scroll"><canvas id="ontologyCanvas" tabindex="0" aria-label="Interactive knowledge graph. Click a fact to inspect its evidence."></canvas></div>
+      <div class="ontology-legend">RAM observation <i class="ontology-dot observed"></i> · empirical transition <i class="ontology-dot empirical"></i> · confirmed result <i class="ontology-dot confirmed"></i> · model attention <i class="ontology-dot focus"></i> · uncertain <i class="ontology-dot uncertain"></i></div>
+      <div class="graph-inspector">
+        <div><small>SELECTED KNOWLEDGE / RELATIONS</small><strong id="ontologyInspectTitle">WAITING FOR KNOWLEDGE</strong></div>
+        <pre id="ontologyInspect">Facts appear after observed RAM or verified transitions.</pre>
+      </div>
+      <details><summary>ONTOLOGY · JSON</summary><pre id="ontologyJson"></pre></details>
+      <details><summary>LAST KNOWLEDGE SENT TO JEV · JSON</summary><pre id="ontologyModelInput">No ranked plan request yet.</pre></details>
+    </section>
+    <section class="lower-grid">
+      <article class="panel graph-panel">
+        <div class="panel-head compact">
+          <div><span class="eyebrow">EXECUTED C++ DECISION GRAPH</span><h2>Observation → knowledge → tasks → plans → risk → action → feedback</h2></div>
+          <div class="legend"><span class="green">ACTIVE PATH</span><span class="amber">JEVT JUDGMENT</span><span>INACTIVE</span></div>
+        </div>
+        <div class="flow-status">
+          <span><i class="live-dot"></i>RAM FRAME <b id="flowFrame">—</b></span>
+          <span>DECISION AGE <b id="decisionAge">—</b></span>
+          <span>NEXT BATCH <b id="nextBatch">—</b></span>
+          <span>DRAG TO PAN · CLICK TO INSPECT JSON</span>
+          <button id="graphZoomOut" aria-label="Zoom out">−</button>
+          <button id="graphZoomIn" aria-label="Zoom in">+</button>
+          <button id="graphFit">FIT</button>
+        </div>
+        <canvas id="decisionGraph" tabindex="0" aria-label="Executed decision graph. Use left and right arrows to inspect nodes."></canvas>
+        <div class="graph-inspector">
+          <div><small>SELECTED CHANNEL</small><strong id="inspectTitle">LIVE STATE BUS</strong></div>
+          <pre id="inspectPayload">Waiting for telemetry…</pre>
+        </div>
+      </article>
+      <article class="panel state-panel">
+        <div class="panel-head compact"><div><span class="eyebrow">STRUCTURED STATE</span><h2>RAM telemetry</h2></div><span class="json-badge">JSON</span></div>
+        <div class="state-facts" id="stateFacts"></div>
+        <div class="tile-grid-wrap"><small>LOCAL COLLISION GRID · <b id="gridSource">WAITING</b></small><pre id="tileGrid">...........
+...........
+....M......
+###########</pre></div>
+      </article>
+    </section>
+  </main>
+  <link rel="stylesheet" href="/ontology.css?v=16">
+  <script src="/ontology.js?v=16"></script>
+  <script src="/dashboard.js?v=16"></script>
+</body>
+</html>

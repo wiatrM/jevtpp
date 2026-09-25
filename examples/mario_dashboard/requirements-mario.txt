@@ -1,0 +1,4 @@
+gym-super-mario-bros>=7.4,<10
+nes-py>=8.2,<10
+numpy>=1.26,<2
+Pillow>=10,<12

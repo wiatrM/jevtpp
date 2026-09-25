@@ -1,0 +1,15 @@
+{
+  "schema_version": "jevt.graph.v1",
+  "nodes": [
+    {"id": "ticket", "operator": "observe.v1"},
+    {"id": "auto_refund", "operator": "propose.v1", "depends_on": ["ticket"], "params": {
+      "action": "refund", "priority": 20,
+      "requirements": [{"field": "refund_authorized", "equals": true}]
+    }},
+    {"id": "review", "operator": "propose.v1", "depends_on": ["ticket"], "params": {
+      "action": "human_review", "priority": 5,
+      "requirements": [{"field": "review_available", "equals": true}]
+    }},
+    {"id": "route", "operator": "arbitrate.v1", "depends_on": ["auto_refund", "review"]}
+  ]
+}

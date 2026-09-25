@@ -1,0 +1,15 @@
+{
+  "schema_version": "jevt.graph.v1",
+  "nodes": [
+    {"id": "sensors", "operator": "observe.v1"},
+    {"id": "dispatch", "operator": "propose.v1", "depends_on": ["sensors"], "params": {
+      "action": "move_pallet", "priority": 50,
+      "requirements": [{"field": "aisle_clear", "equals": true}]
+    }},
+    {"id": "charge", "operator": "propose.v1", "depends_on": ["sensors"], "params": {
+      "action": "dock", "priority": 10,
+      "requirements": [{"field": "dock_clear", "equals": true}]
+    }},
+    {"id": "command", "operator": "arbitrate.v1", "depends_on": ["dispatch", "charge"]}
+  ]
+}

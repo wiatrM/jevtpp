@@ -29,6 +29,19 @@ An opt-in remote backend uses the same typed API with hosted inference.
 [ONNX setup](docs/LAYA.md) · [Native CPU/CUDA](docs/NATIVE.md) · [Remote](docs/REMOTE.md) · [Performance](docs/PERFORMANCE.md) ·
 [Runnable demo](examples/laya_routing_demo.cpp)
 
+## Runtime-configured decision graphs
+
+The optional [decision graph](docs/DECISION_GRAPHS.md) composes dependent
+observations, judgments and action proposals with explicit snapshot provenance.
+The [skill arbiter and operator registry](docs/SKILLS.md) can validate and load
+a versioned JSON graph at runtime without recompiling C++; operator
+implementations are still compiled, trusted C++ callbacks. The
+[warehouse and routing configurations](examples/skills/) run through one
+[C++ demo](examples/skill_runtime_demo.cpp). These primitives do not train a
+policy or guarantee safe actions: domain adapters must verify observations,
+constraints and outcomes. The [NES Mario research demo](examples/mario_dashboard/README.md)
+uses them with local CUDA inference but has **not** cleared the full game.
+
 JevT++ is an independent open-source library. It is not the proprietary Jev
 model or an official TypeSafe SDK. The bundled adapter runs Laya; model quality
 depends on its weights and your task.

@@ -35,6 +35,12 @@ Thumbs.db
 # Benchmark and coverage artefacts
 /benchmark-results/
 /coverage/
+/.deps/
+/.venv-mario/
+/.venv-open-jev/
+/models/
+/examples/mario_dashboard/artifacts/
+/examples/mario_dashboard/assets/
 *.gcda
 *.gcno
 *.profraw
