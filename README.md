@@ -29,6 +29,20 @@ An opt-in remote backend uses the same typed API with hosted inference.
 [ONNX setup](docs/LAYA.md) · [Native CPU/CUDA](docs/NATIVE.md) · [Remote](docs/REMOTE.md) · [Performance](docs/PERFORMANCE.md) ·
 [Runnable demo](examples/laya_routing_demo.cpp)
 
+## Watch: a local AI brain playing Mario
+
+[![Watch the JevT++ Mario demo on YouTube](https://img.youtube.com/vi/WVcprALYrBU/maxresdefault.jpg)](https://youtu.be/WVcprALYrBU)
+
+**[Watch the demo on YouTube](https://youtu.be/WVcprALYrBU)** — gameplay,
+decision traces and the knowledge graph behind the actions. A local Laya model
+ranks candidate plans on CUDA; JevT++ validates and executes accepted plans,
+with local guards and fallback control between model decisions. Inference and
+control run in native C++; a Python bridge connects the NES emulator.
+
+This development-build demo runs on an RTX 4090. It demonstrates the integration,
+not a completed-game run. See the [Mario example](examples/mario_dashboard/README.md)
+for setup and limitations.
+
 ## Runtime-configured decision graphs
 
 The optional [decision graph](docs/DECISION_GRAPHS.md) composes dependent
