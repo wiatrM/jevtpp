@@ -155,4 +155,35 @@ JEVT_TEST("typed observation is opt-in, keeps exact JSON bytes, budgets exactly 
     JEVT_REQUIRE(legacy_budget_rejected);
 }
 
+JEVT_TEST("knowledge rejects reserved identity separators without mutating state") {
+    jevt::knowledge_graph graph;
+    graph.begin_run("run-1");
+    auto invalid = fact("value", "event", 1);
+    invalid.id += '\x1f';
+    const auto generation = graph.generation();
+    const auto result = graph.ingest_ram_observation(invalid);
+    JEVT_REQUIRE(!result.accepted);
+    JEVT_REQUIRE_EQ(result.reason, "reserved_fact_separator");
+    JEVT_REQUIRE_EQ(graph.generation(), generation);
+    JEVT_REQUIRE_EQ(graph.size(), 0u);
+}
+
+JEVT_TEST("knowledge snapshot rejects invalid enums atomically") {
+    jevt::knowledge_graph graph;
+    graph.begin_run("run-1");
+    auto invalid = fact("value", "event", 1);
+    invalid.scope = static_cast<jevt::knowledge_scope>(99);
+    JEVT_REQUIRE_EQ(graph.ingest_ram_observation(invalid).reason, "invalid_fact_scope");
+    invalid.scope = jevt::knowledge_scope::session;
+    invalid.evidence = static_cast<jevt::knowledge_evidence>(99);
+    const auto generation = graph.generation();
+    bool rejected = false;
+    try { graph.restore_session_snapshot(std::span<const jevt::knowledge_fact>(&invalid, 1)); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    JEVT_REQUIRE(rejected);
+    JEVT_REQUIRE_EQ(graph.generation(), generation);
+    JEVT_REQUIRE_EQ(graph.size(), 0u);
+}
+
 int main() { return jevt::test::run_all("knowledge graph"); }
+

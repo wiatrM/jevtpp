@@ -82,7 +82,8 @@ public:
     }
 
     void begin_run(std::string run_id, bool retain_session = true) {
-        if (run_id.empty() || run_id.size() > limits_.field_bytes)
+        if (run_id.empty() || run_id.size() > limits_.field_bytes ||
+            run_id.find('\x1f') != std::string::npos)
             throw std::invalid_argument("run ID is empty or too long");
         current_run_ = std::move(run_id);
         auto out = facts_.begin();
@@ -301,10 +302,16 @@ private:
         return fact.run_id + '\x1f' + std::string(name(fact.scope)) + '\x1f' + fact.id;
     }
     std::string validate(const knowledge_fact& fact) const {
+        if (fact.scope != knowledge_scope::observation && fact.scope != knowledge_scope::run &&
+            fact.scope != knowledge_scope::session) return "invalid_fact_scope";
+        if (fact.evidence != knowledge_evidence::ram_observation &&
+            fact.evidence != knowledge_evidence::verified_outcome &&
+            fact.evidence != knowledge_evidence::model_hypothesis) return "invalid_fact_evidence";
         for (const auto* value : {&fact.id, &fact.subject, &fact.relation, &fact.object,
                                   &fact.source, &fact.event_id, &fact.run_id}) {
             if (value->empty()) return "required_fact_field_missing";
             if (value->size() > limits_.field_bytes) return "fact_field_too_long";
+            if (value->find('\x1f') != std::string::npos) return "reserved_fact_separator";
         }
         if (fact.attributes_json.size() > limits_.field_bytes) return "fact_field_too_long";
         if (fact.priority > 1000) return "priority_out_of_range";
@@ -465,3 +472,4 @@ namespace knowledge_detail {
 }
 
 } // namespace jevt
+
